@@ -3,6 +3,7 @@ import { AlertTriangle, Check, KeyRound, Loader2, Plus, RefreshCw, Trash2, X } f
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { GenerationConfig } from '../components/GenerationConfig';
+import { QueueCard } from '../components/QueueCard';
 import { Badge, Button, Card, Field, Input, Notice, Select } from '../components/ui';
 
 export function SettingsPage() {
@@ -24,6 +25,7 @@ export function SettingsPage() {
       </div>
 
       <ApiKeysCard keys={keys} projects={projects} onChange={() => void reload()} />
+      <QueueCard />
       <GenerationConfig />
     </div>
   );

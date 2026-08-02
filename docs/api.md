@@ -221,13 +221,26 @@ DTO містить `usageToday` і `blockedModels` — тиск на бюдже�
 
 Тіло: `{ "ids": [...] }` → `{ "removed": n }`.
 
+### `GET /api/jobs`
+
+Стан черги: `counts` за статусами + останні джоби. Фільтри `status`, `projectId`, `limit`.
+
+### `POST /api/jobs/:id/retry`
+
+Скидає лічильник спроб і повертає джобу в чергу. Лише для `failed` або `dead` — інакше `409`.
+
+### `POST /api/scheduler/plan`
+
+Форсує прохід планувальника замість очікування тіку. Повертає
+`{ projects, postsPlanned, jobsEnqueued, skipped }`; `skipped: true` означає, що лок планувальника
+тримає інший інстанс.
+
 ## Заплановано
 
 Зʼявиться у відповідних фазах; описується тут у міру реалізації.
 
 | Маршрут | Фаза |
 | --- | --- |
-| `GET /api/jobs`, `POST /api/jobs/:id/retry` | 4 |
 | `GET/PATCH /api/projects/:id/posts` | 5 |
 | `GET /api/posts/:id/image` | 6 |
 | `POST /api/posts/:id/publish` | 7 |

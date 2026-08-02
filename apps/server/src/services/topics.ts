@@ -316,7 +316,7 @@ export async function takeNextTopic(project: {
  * the same topic to both posts.
  */
 async function claimOne(projectId: string): Promise<Topic | null> {
-  const rows = await db.execute<Topic>(sql`
+  const result: unknown = await db.execute(sql`
     update ${topics} set status = 'queued'
     where id = (
       select id from ${topics}
@@ -325,9 +325,19 @@ async function claimOne(projectId: string): Promise<Topic | null> {
       for update skip locked
       limit 1
     )
-    returning *
+    returning id
   `);
 
-  const row = rows.rows?.[0] ?? (Array.isArray(rows) ? rows[0] : undefined);
-  return (row as Topic | undefined) ?? null;
+  // `returning *` would hand back snake_case keys, since raw SQL skips
+  // Drizzle's column mapping — `normalizedHash` and `projectId` would read as
+  // undefined while their snake_case twins hold the values. Re-select typed.
+  const rows = Array.isArray(result)
+    ? (result as { id: string }[])
+    : (((result as { rows?: { id: string }[] }).rows ?? []) as { id: string }[]);
+
+  const id = rows[0]?.id;
+  if (!id) return null;
+
+  const [topic] = await db.select().from(topics).where(eq(topics.id, id)).limit(1);
+  return topic ?? null;
 }

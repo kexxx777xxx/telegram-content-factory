@@ -5,6 +5,7 @@ import { runMigrations } from './db/migrate.js';
 import { createApp } from './http/app.js';
 import { logger } from './logger.js';
 import { ensureDefaultPrompts } from './prompts/resolve.js';
+import { startScheduler, stopScheduler } from './scheduler/index.js';
 
 async function main() {
   for (const line of authWarnings()) logger.warn(line);
@@ -25,6 +26,8 @@ async function main() {
   await ensureDefaultPrompts();
   await ensureDefaultChains();
 
+  startScheduler();
+
   const app = createApp();
   const server = app.listen(env.PORT, env.ADMIN_BIND_HOST, () => {
     logger.info(
@@ -36,7 +39,11 @@ async function main() {
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'shutting down');
     server.close(() => {
-      void closeDatabase().finally(() => process.exit(0));
+      // Let in-flight jobs finish before the pool releases the database.
+      void stopScheduler()
+        .catch((err: unknown) => logger.error({ err }, 'scheduler shutdown failed'))
+        .then(() => closeDatabase())
+        .finally(() => process.exit(0));
     });
     // Do not let a hung connection keep the process alive forever.
     setTimeout(() => process.exit(1), 10_000).unref();

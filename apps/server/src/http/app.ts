@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { generationRouter } from '../api/routes/generation.js';
 import { healthRouter } from '../api/routes/health.js';
+import { jobsRouter } from '../api/routes/jobs.js';
 import { keysRouter } from '../api/routes/keys.js';
 import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
@@ -65,6 +66,7 @@ export function createApp(): Express {
   api.use(keysRouter);
   api.use(generationRouter);
   api.use(topicsRouter);
+  api.use(jobsRouter);
   app.use('/api', api);
 
   // Built SPA, when present. In dev the Vite server owns this and proxies /api.

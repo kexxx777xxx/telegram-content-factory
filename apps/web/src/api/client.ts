@@ -53,6 +53,24 @@ export interface SessionState {
   authEnabled: boolean;
 }
 
+export interface JobDto {
+  id: string;
+  type: string;
+  projectId: string | null;
+  status: string;
+  attempts: number;
+  maxAttempts: number;
+  runAfter: string;
+  lastError: string | null;
+  dedupeKey: string | null;
+  updatedAt: string;
+}
+
+export interface JobsPage {
+  counts: Record<string, number>;
+  jobs: JobDto[];
+}
+
 export const api = {
   health: () => request<Health>('/health'),
   session: () => request<SessionState>('/session'),
@@ -102,6 +120,14 @@ export const api = {
     request<ActionConfig[]>(
       `/config/generation/${action}?projectId=${projectId}&chain=${what.chain !== false}&prompt=${what.prompt !== false}`,
       { method: 'DELETE' },
+    ),
+
+  listJobs: () => request<JobsPage>('/jobs'),
+  retryJob: (id: string) => request<void>(`/jobs/${id}/retry`, { method: 'POST' }),
+  forcePlan: () =>
+    request<{ projects: number; postsPlanned: number; jobsEnqueued: number; skipped: boolean }>(
+      '/scheduler/plan',
+      { method: 'POST' },
     ),
 
   listTopics: (projectId: string) => request<TopicsPage>(`/projects/${projectId}/topics`),
