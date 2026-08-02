@@ -15,6 +15,13 @@
       "when": 1785682883826,
       "tag": "0001_ai_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785703000244,
+      "tag": "0002_image_action",
+      "breakpoints": true
     }
   ]
 }

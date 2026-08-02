@@ -2,11 +2,13 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { config } from '../config.js';
 import { db } from '../db/client.js';
 import { events, jobs, posts } from '../db/schema.js';
+import { sweepStaging } from '../media/staging.js';
 
 export interface PruneReport {
   events: number;
   jobs: number;
   postTexts: number;
+  stagingOrphans: number;
 }
 
 /**
@@ -50,5 +52,14 @@ export async function runPrune(): Promise<PruneReport> {
     prunedTexts = cleared.length;
   }
 
-  return { events: prunedEvents.length, jobs: prunedJobs.length, postTexts: prunedTexts };
+  // Files whose post row vanished mid-generation; the directory is bounded on
+  // paper only if something actually removes them.
+  const staging = await sweepStaging();
+
+  return {
+    events: prunedEvents.length,
+    jobs: prunedJobs.length,
+    postTexts: prunedTexts,
+    stagingOrphans: staging.orphansRemoved,
+  };
 }

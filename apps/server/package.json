@@ -19,16 +19,19 @@
   },
   "dependencies": {
     "@google/genai": "^2.15.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@tcf/shared": "*",
     "argon2": "^0.45.1",
     "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.1",
+    "fast-xml-parser": "^5.10.1",
     "helmet": "^8.3.0",
     "luxon": "^3.7.2",
     "pg": "^8.22.0",
     "pino": "^10.3.1",
+    "sharp": "^0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -3,6 +3,8 @@ import {
   LlmError,
   type LlmGenerateRequest,
   type LlmGenerateResult,
+  type LlmImageRequest,
+  type LlmImageResult,
   type LlmModelInfo,
   type LlmProvider,
 } from './provider.js';
@@ -54,6 +56,46 @@ export class GeminiProvider implements LlmProvider {
 
       return {
         text,
+        model: request.model,
+        usage: {
+          inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
+          outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+        },
+      };
+    } catch (err) {
+      throw classify(err, request.model);
+    }
+  }
+
+  /**
+   * Image models answer with inline base64 parts rather than text, so this is a
+   * separate method instead of a flag on `generate`.
+   */
+  async generateImage(apiKey: string, request: LlmImageRequest): Promise<LlmImageResult> {
+    const ai = new GoogleGenAI({ apiKey });
+    const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+    try {
+      const response = await withTimeout(
+        ai.models.generateContent({ model: request.model, contents: request.prompt }),
+        timeoutMs,
+        request.model,
+      );
+
+      const parts = response.candidates?.[0]?.content?.parts ?? [];
+      const image = parts.find((part) => part.inlineData?.data);
+      if (!image?.inlineData?.data) {
+        // A refusal or safety block arrives as text with no image part.
+        const text = response.text?.trim();
+        throw new LlmError(
+          'server',
+          `Модель ${request.model} не повернула зображення${text ? `: ${text.slice(0, 160)}` : ''}`,
+        );
+      }
+
+      return {
+        data: Buffer.from(image.inlineData.data, 'base64'),
+        mimeType: image.inlineData.mimeType ?? 'image/png',
         model: request.model,
         usage: {
           inputTokens: response.usageMetadata?.promptTokenCount ?? 0,

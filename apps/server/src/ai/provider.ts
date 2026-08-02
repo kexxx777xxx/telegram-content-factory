@@ -73,8 +73,23 @@ export class LlmError extends Error {
   }
 }
 
+export interface LlmImageRequest {
+  model: string;
+  prompt: string;
+  timeoutMs?: number;
+}
+
+export interface LlmImageResult {
+  data: Buffer;
+  mimeType: string;
+  model: string;
+  usage: LlmUsage;
+}
+
 export interface LlmProvider {
   readonly name: AiProvider;
   generate(apiKey: string, request: LlmGenerateRequest): Promise<LlmGenerateResult>;
+  /** Absent when the provider has no image models. */
+  generateImage?(apiKey: string, request: LlmImageRequest): Promise<LlmImageResult>;
   listModels(apiKey: string): Promise<LlmModelInfo[]>;
 }

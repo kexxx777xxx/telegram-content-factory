@@ -25,11 +25,26 @@ export interface ResolvedChain {
 
 /**
  * Starting points, not hardcoded truth: the catalog endpoint reads the real
- * list from the provider, and any of these can be replaced in the UI. They are
- * ordered cheap-enough-first, with an older generation last so a whole model
- * family being rate limited still leaves something to fall back to.
+ * list from the provider, and any of these can be replaced in the UI.
  */
-const DEFAULT_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'] as const;
+const DEFAULT_TEXT_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'] as const;
+
+/**
+ * SVG leads with the lite model on purpose, and it is a measurement rather than
+ * a preference: a schematic runs to ~4000 output tokens, which the larger
+ * models do not finish inside the 60-second budget, while the lite one returns
+ * in about eleven seconds. Ordering them the usual way made every illustration
+ * burn a full timeout before producing anything.
+ */
+const DEFAULT_SVG_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash-lite'] as const;
+
+const DEFAULT_IMAGE_MODELS = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image'] as const;
+
+function defaultModelsFor(action: AiAction): readonly string[] {
+  if (action === 'image') return DEFAULT_IMAGE_MODELS;
+  if (action === 'svg' || action === 'svg_repair') return DEFAULT_SVG_MODELS;
+  return DEFAULT_TEXT_MODELS;
+}
 
 export async function resolveChain(action: AiAction, projectId: string): Promise<ResolvedChain | null> {
   const own = await loadChain(and(eq(modelChains.action, action), eq(modelChains.projectId, projectId)));
@@ -85,7 +100,7 @@ export async function ensureDefaultChains(): Promise<void> {
     if (!chain) continue;
 
     await db.insert(modelChainSteps).values(
-      DEFAULT_MODELS.map((model, index) => ({
+      defaultModelsFor(action).map((model, index) => ({
         chainId: chain.id,
         position: index,
         provider: 'gemini' as const,
@@ -96,7 +111,7 @@ export async function ensureDefaultChains(): Promise<void> {
       })),
     );
 
-    logger.info({ action, models: DEFAULT_MODELS }, 'seeded default global chain');
+    logger.info({ action, models: defaultModelsFor(action) }, 'seeded default global chain');
   }
 }
 

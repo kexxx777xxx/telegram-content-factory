@@ -1,8 +1,10 @@
 import type { PostDto } from '@tcf/shared';
 import { Router } from 'express';
+import { createReadStream } from 'node:fs';
 import { z } from 'zod';
 import type { Post } from '../../db/schema.js';
 import { logger } from '../../logger.js';
+import { stagedImageExists } from '../../media/staging.js';
 import { enqueue } from '../../queue/enqueue.js';
 import {
   getPost,
@@ -54,6 +56,35 @@ postsRouter.get('/projects/:id/posts', async (req, res) => {
     postCounts(params.data.id),
   ]);
   res.json({ posts: rows.map(toDto), counts });
+});
+
+/**
+ * Streams the staged render. Only buffered posts have one: after publishing the
+ * file is deleted and the image lives in Telegram (ADR 0002).
+ */
+postsRouter.get('/posts/:postId/image', async (req, res) => {
+  const params = postParam.safeParse(req.params);
+  if (!params.success) return badRequest(res, firstIssue(params.error));
+
+  let post;
+  try {
+    post = await getPost(params.data.postId);
+  } catch (err) {
+    if (err instanceof PostNotFoundError) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+
+  if (!stagedImageExists(post.imagePath)) {
+    res.status(404).json({ error: 'Зображення недоступне' });
+    return;
+  }
+
+  res.type('image/png');
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  createReadStream(post.imagePath!).pipe(res);
 });
 
 postsRouter.get('/posts/:postId', async (req, res) => {

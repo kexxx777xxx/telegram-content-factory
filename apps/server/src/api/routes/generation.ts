@@ -189,5 +189,11 @@ function defaultVariables(
         ...base,
         postText: 'Коротка нотатка про те, чому повторна доставка повідомлень неминуча.',
       };
+    case 'image':
+      return {
+        ...base,
+        imagePrompt:
+          'A 16:9 hand-drawn schematic on grid paper, pencil and ink, pastel highlighter accents, no text.',
+      };
   }
 }

@@ -21,6 +21,7 @@ const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
   svg: { title: 'SVG-схема', hint: 'Ілюстрація, коли режим — SVG' },
   svg_repair: { title: 'Ремонт SVG', hint: 'Виклик, коли санітайзер відхилив схему' },
   image_prompt: { title: 'Промпт для зображення', hint: 'Коли режим — image-модель' },
+  image: { title: 'Малювання зображення', hint: 'Модель, що малює за промптом вище' },
 };
 
 const VARIABLES: Record<AiAction, string[]> = {
@@ -29,6 +30,7 @@ const VARIABLES: Record<AiAction, string[]> = {
   svg: ['topic', 'style'],
   svg_repair: ['error', 'svgSource'],
   image_prompt: ['postText', 'style'],
+  image: ['imagePrompt'],
 };
 
 /**

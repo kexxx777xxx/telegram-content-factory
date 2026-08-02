@@ -4,6 +4,8 @@ import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js
 import { db } from '../db/client.js';
 import { posts, projects, topics, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
+import { generateImage } from '../media/pipeline.js';
+import { removeStagedImage } from '../media/staging.js';
 import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
 import { takeNextTopic } from './topics.js';
 
@@ -14,6 +16,9 @@ const GENERATABLE: PostStatus[] = ['planned', 'failed'];
 
 export interface GenerationMeta {
   model?: string;
+  imageKind?: string | null;
+  imageModel?: string | null;
+  imageNotes?: string[];
   promptId?: string;
   promptVersion?: number;
   inputTokens?: number;
@@ -87,6 +92,13 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
       log.info({ removedTags: clean.removedTags }, 'model returned markup outside the allowed set');
     }
 
+    // Image generation happens after the text so the image-model branch can
+    // describe what the post actually says, not just its topic.
+    const image = await generateImage(
+      { id: post.id, topicTitle: topic.title, textHtml: clean.html },
+      project,
+    );
+
     const meta: GenerationMeta = {
       model: result.model,
       promptId: result.promptId,
@@ -97,6 +109,9 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
       generatedAt: new Date().toISOString(),
       removedTags: clean.removedTags,
       visibleLength: visibleLength(clean.html),
+      imageKind: image?.kind ?? null,
+      imageModel: image?.model ?? null,
+      imageNotes: image?.notes ?? [],
     };
 
     await db
@@ -104,8 +119,10 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
       .set({
         textHtml: clean.html,
         topicTitle: topic.title,
-        // Image generation joins this handler in phase 6; until then a post with
-        // text is as ready as it gets.
+        imagePath: image?.path ?? null,
+        imageKind: image?.kind ?? null,
+        // `svgSource` is kept only while the post is buffered; publishing clears it.
+        svgSource: image?.svgSource ?? null,
         status: project.publishMode === 'approval' ? 'awaiting_approval' : 'ready',
         generation: meta,
         error: null,
@@ -114,8 +131,13 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
       .where(eq(posts.id, post.id));
 
     log.info(
-      { model: result.model, chars: meta.visibleLength, topic: topic.title },
-      'post text generated',
+      {
+        model: result.model,
+        chars: meta.visibleLength,
+        topic: topic.title,
+        image: image?.kind ?? 'none',
+      },
+      'post generated',
     );
     return 'generated';
   } catch (err) {
@@ -209,12 +231,17 @@ export async function resetForRegeneration(id: string, keepTopic: boolean): Prom
   }
 
   if (!keepTopic) await releaseTopic(post.topicId);
+  // Without this the previous render stays on disk with nothing referencing it.
+  await removeStagedImage(post.imagePath);
 
   const [row] = await db
     .update(posts)
     .set({
       status: 'planned',
       textHtml: null,
+      imagePath: null,
+      imageKind: null,
+      svgSource: null,
       error: null,
       ...(keepTopic ? {} : { topicId: null, topicTitle: null }),
       updatedAt: new Date(),

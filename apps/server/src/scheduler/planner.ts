@@ -1,7 +1,7 @@
 import { scheduleSchema } from '@tcf/shared';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { posts, projects, type Project } from '../db/schema.js';
+import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
@@ -129,15 +129,28 @@ function generationStart(project: Project, slot: Date): Date {
   return start.getTime() < Date.now() ? new Date() : start;
 }
 
-/** At most one prune per day; the dedupe key carries the date. */
+/**
+ * At most one prune per calendar day.
+ *
+ * The dedupe index alone is not enough here: it is partial on `pending|running`,
+ * so the key frees up the moment the job finishes and the next tick would queue
+ * another — a daily task running every sixty seconds. The date key has to be
+ * checked against *all* statuses, not just in-flight ones.
+ */
 async function enqueueDailyPrune(): Promise<number> {
   if (!isImplemented('prune')) return 0;
+
   const day = new Date().toISOString().slice(0, 10);
-  const enqueued = await enqueue({
-    type: 'prune',
-    dedupeKey: `prune:${day}`,
-    maxAttempts: 2,
-  });
+  const dedupeKey = `prune:${day}`;
+
+  const [alreadyToday] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(eq(jobs.dedupeKey, dedupeKey))
+    .limit(1);
+  if (alreadyToday) return 0;
+
+  const enqueued = await enqueue({ type: 'prune', dedupeKey, maxAttempts: 2 });
   return enqueued ? 1 : 0;
 }
 

@@ -90,6 +90,13 @@ viewBox="0 0 1200 675", жодного тексту всередині, без <
 - Без логотипів, брендів і впізнаваних реальних людей.
 
 Поверни лише сам промпт одним абзацом.`,
+
+  /**
+   * The image action feeds a drawing model, whose input is the text produced by
+   * `image_prompt`. This template exists only so the action has a resolvable
+   * prompt like every other; `{{imagePrompt}}` is normally the whole content.
+   */
+  image: `{{imagePrompt}}`,
 };
 
 /** Style tokens injected as {{style}} when a project has not overridden them. */

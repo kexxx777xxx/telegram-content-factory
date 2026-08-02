@@ -4,6 +4,7 @@ import { checkDatabase, closeDatabase } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { createApp } from './http/app.js';
 import { logger } from './logger.js';
+import { ensureStagingDir } from './media/staging.js';
 import { ensureDefaultPrompts } from './prompts/resolve.js';
 import { startScheduler, stopScheduler } from './scheduler/index.js';
 
@@ -23,6 +24,7 @@ async function main() {
 
   // Idempotent: existing rows are never overwritten, so operator edits survive
   // restarts while a fresh database still boots with a working configuration.
+  await ensureStagingDir();
   await ensureDefaultPrompts();
   await ensureDefaultChains();
 

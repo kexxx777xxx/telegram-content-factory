@@ -163,6 +163,7 @@ function PostRow({
         {post.generation.model && (
           <span className="text-xs text-slate-400">{post.generation.model}</span>
         )}
+        {post.imageKind === 'svg_fallback' && <Badge tone="amber">резервна схема</Badge>}
         {post.permalink && (
           <a
             href={post.permalink}
@@ -183,6 +184,23 @@ function PostRow({
             <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               {post.error}
+            </div>
+          )}
+
+          {post.hasImage && (
+            <div className="space-y-1.5">
+              <img
+                src={`/api/posts/${post.id}/image?v=${encodeURIComponent(post.updatedAt)}`}
+                alt=""
+                className="w-full rounded-lg border border-slate-200"
+              />
+              <p className="text-xs text-slate-500">
+                {post.imageKind === 'svg_fallback'
+                  ? 'Резервна схема — модель не дала валідного SVG'
+                  : post.imageKind === 'image_model'
+                    ? 'Згенеровано image-моделлю'
+                    : 'SVG-схема від моделі'}
+              </p>
             </div>
           )}
 

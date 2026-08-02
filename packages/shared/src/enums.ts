@@ -63,7 +63,10 @@ export const AI_ACTIONS = [
   'post_text',
   'svg',
   'svg_repair',
+  /** Writes the prompt for the image model. */
   'image_prompt',
+  /** Draws it — a different model family, hence its own chain. */
+  'image',
 ] as const;
 export type AiAction = (typeof AI_ACTIONS)[number];
 
