@@ -12,6 +12,7 @@ import {
   toUpdatePayload,
   type ProjectFormValue,
 } from '../components/ProjectForm';
+import { TopicsCard } from '../components/TopicsCard';
 import { Button, Card, Input, Notice } from '../components/ui';
 
 export function ProjectPage() {
@@ -86,6 +87,8 @@ export function ProjectPage() {
       <ProjectForm value={form} onChange={setForm} mode={isNew ? 'create' : 'edit'} />
 
       {!isNew && project && <TelegramCard project={project} />}
+
+      {!isNew && project && <TopicsCard project={project} />}
 
       {!isNew && project && <GenerationConfig projectId={project.id} />}
 

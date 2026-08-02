@@ -186,13 +186,47 @@ DTO містить `usageToday` і `blockedModels` — тиск на бюдже�
 Завжди `200`: вичерпаний ланцюжок — це діагностика, а не помилка запиту. У `error` тоді
 вказано найранішій час, коли щось може спрацювати знову.
 
+### `GET /api/projects/:id/topics`
+
+Теми проєкту (до 500, найновіші перші) + лічильники.
+
+```json
+{ "topics": [...], "counts": { "fresh": 19, "queued": 0, "used": 0, "rejected": 0, "total": 19 } }
+```
+
+`fresh` і `queued` розділені навмисно: тема в статусі `queued` уже закріплена за постом, що
+готується. Якби поріг поповнення рахував їх разом, банк міг би вичерпатись у момент, коли всі
+рядки вже роздані.
+
+### `POST /api/projects/:id/topics/import`
+
+Тіло: `{ "text": "..." }` — одна тема на рядок, необовʼязково `Категорія | Назва`,
+маркери списку (`-`, `*`, `•`) зрізаються.
+
+Дублікати не валять імпорт: вони рахуються й повертаються в `duplicates`.
+
+### `POST /api/projects/:id/topics/replenish`
+
+Тіло: `{ "count": 20 }`. Запитує теми в моделі через ланцюжок `topics` зі structured output.
+Наявні назви йдуть у промпт, щоб модель уникала повторів за змістом.
+
+Повертає `{ requested, generated, inserted, duplicates, titles, model }`.
+`409`, якщо ланцюжок не налаштований або вичерпаний — з причиною в тексті.
+
+### `PATCH /api/topics/:topicId`
+
+Тіло: `{ "status": "new|queued|used|rejected" }`.
+
+### `POST /api/topics/delete`
+
+Тіло: `{ "ids": [...] }` → `{ "removed": n }`.
+
 ## Заплановано
 
 Зʼявиться у відповідних фазах; описується тут у міру реалізації.
 
 | Маршрут | Фаза |
 | --- | --- |
-| `GET/POST/DELETE /api/projects/:id/topics` | 3 |
 | `GET /api/jobs`, `POST /api/jobs/:id/retry` | 4 |
 | `GET/PATCH /api/projects/:id/posts` | 5 |
 | `GET /api/posts/:id/image` | 6 |

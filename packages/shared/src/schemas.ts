@@ -10,6 +10,8 @@ import {
   PROMPT_SCOPES,
   PUBLISH_MODES,
   SCHEDULE_MODES,
+  TOPIC_SOURCES,
+  TOPIC_STATUSES,
 } from './enums.js';
 
 /** `HH:MM` in the project's own timezone. */
@@ -308,6 +310,52 @@ export const dryRunResultSchema = z.object({
   renderedPrompt: z.string().nullable(),
 });
 export type DryRunResult = z.infer<typeof dryRunResultSchema>;
+
+/* ── topics ───────────────────────────────────────────────────────────────── */
+
+export const topicDtoSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  normalizedHash: z.string(),
+  category: z.string().nullable(),
+  status: z.enum(TOPIC_STATUSES),
+  source: z.enum(TOPIC_SOURCES),
+  usedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type TopicDto = z.infer<typeof topicDtoSchema>;
+
+export const topicsPageSchema = z.object({
+  topics: z.array(topicDtoSchema),
+  counts: z.object({
+    /** Unclaimed topics — the number the replenish threshold compares against. */
+    fresh: z.number().int(),
+    queued: z.number().int(),
+    used: z.number().int(),
+    rejected: z.number().int(),
+    total: z.number().int(),
+  }),
+});
+export type TopicsPage = z.infer<typeof topicsPageSchema>;
+
+/** Free-text import: one title per line, optional `category | title` prefix. */
+export const topicsImportSchema = z.object({
+  text: z.string().min(1).max(50_000),
+});
+
+export const replenishInputSchema = z.object({
+  count: z.number().int().min(1).max(50).default(20),
+});
+
+export const replenishReportSchema = z.object({
+  requested: z.number().int(),
+  generated: z.number().int(),
+  inserted: z.number().int(),
+  duplicates: z.number().int(),
+  titles: z.array(z.string()),
+  model: z.string(),
+});
+export type ReplenishReportDto = z.infer<typeof replenishReportSchema>;
 
 export const loginSchema = z.object({
   password: z.string().min(1),

@@ -8,6 +8,7 @@ import { healthRouter } from '../api/routes/health.js';
 import { keysRouter } from '../api/routes/keys.js';
 import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
+import { topicsRouter } from '../api/routes/topics.js';
 import { config, env } from '../config.js';
 import { logger } from '../logger.js';
 import { csrfGuard, requireAuth } from './auth.js';
@@ -63,6 +64,7 @@ export function createApp(): Express {
   api.use(projectsRouter);
   api.use(keysRouter);
   api.use(generationRouter);
+  api.use(topicsRouter);
   app.use('/api', api);
 
   // Built SPA, when present. In dev the Vite server owns this and proxies /api.

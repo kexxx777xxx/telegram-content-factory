@@ -12,7 +12,9 @@ import type {
   ProjectDto,
   ProjectInput,
   ProjectUpdate,
+  ReplenishReportDto,
   TelegramCheck,
+  TopicsPage,
 } from '@tcf/shared';
 
 export class ApiError extends Error {
@@ -101,6 +103,20 @@ export const api = {
       `/config/generation/${action}?projectId=${projectId}&chain=${what.chain !== false}&prompt=${what.prompt !== false}`,
       { method: 'DELETE' },
     ),
+
+  listTopics: (projectId: string) => request<TopicsPage>(`/projects/${projectId}/topics`),
+  importTopics: (projectId: string, text: string) =>
+    request<{ inserted: number; duplicates: number; titles: string[] }>(
+      `/projects/${projectId}/topics/import`,
+      { method: 'POST', body: JSON.stringify({ text }) },
+    ),
+  replenishTopics: (projectId: string, count: number) =>
+    request<ReplenishReportDto>(`/projects/${projectId}/topics/replenish`, {
+      method: 'POST',
+      body: JSON.stringify({ count }),
+    }),
+  deleteTopics: (ids: string[]) =>
+    request<{ removed: number }>('/topics/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
 
   dryRun: (projectId: string, input: DryRunInput) =>
     request<DryRunResult>(`/projects/${projectId}/dry-run`, {
