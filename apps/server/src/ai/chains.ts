@@ -1,0 +1,193 @@
+import { AI_ACTIONS, type AiAction, type KeyPreference } from '@tcf/shared';
+import { and, asc, eq, isNull } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { modelChains, modelChainSteps } from '../db/schema.js';
+import { logger } from '../logger.js';
+
+export interface ChainStep {
+  id: string;
+  position: number;
+  provider: 'gemini';
+  model: string;
+  params: { temperature?: number; maxOutputTokens?: number; thinkingBudget?: number };
+  promptId: string | null;
+  keyPreference: KeyPreference;
+}
+
+export interface ResolvedChain {
+  id: string;
+  /** null = the global default chain is in use, the project has no override. */
+  projectId: string | null;
+  action: AiAction;
+  enabled: boolean;
+  steps: ChainStep[];
+}
+
+/**
+ * Starting points, not hardcoded truth: the catalog endpoint reads the real
+ * list from the provider, and any of these can be replaced in the UI. They are
+ * ordered cheap-enough-first, with an older generation last so a whole model
+ * family being rate limited still leaves something to fall back to.
+ */
+const DEFAULT_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'] as const;
+
+export async function resolveChain(action: AiAction, projectId: string): Promise<ResolvedChain | null> {
+  const own = await loadChain(and(eq(modelChains.action, action), eq(modelChains.projectId, projectId)));
+  if (own?.enabled && own.steps.length > 0) return own;
+
+  const global = await loadChain(and(eq(modelChains.action, action), isNull(modelChains.projectId)));
+  if (global?.enabled && global.steps.length > 0) return global;
+
+  return null;
+}
+
+async function loadChain(where: ReturnType<typeof and>): Promise<ResolvedChain | null> {
+  const [chain] = await db.select().from(modelChains).where(where).limit(1);
+  if (!chain) return null;
+
+  const steps = await db
+    .select()
+    .from(modelChainSteps)
+    .where(eq(modelChainSteps.chainId, chain.id))
+    .orderBy(asc(modelChainSteps.position));
+
+  return {
+    id: chain.id,
+    projectId: chain.projectId,
+    action: chain.action,
+    enabled: chain.enabled,
+    steps: steps.map((step) => ({
+      id: step.id,
+      position: step.position,
+      provider: step.provider,
+      model: step.model,
+      params: (step.params ?? {}) as ChainStep['params'],
+      promptId: step.promptId,
+      keyPreference: step.keyPreference,
+    })),
+  };
+}
+
+/** Seeds one global chain per action if none exists. Never touches existing rows. */
+export async function ensureDefaultChains(): Promise<void> {
+  for (const action of AI_ACTIONS) {
+    const [existing] = await db
+      .select({ id: modelChains.id })
+      .from(modelChains)
+      .where(and(eq(modelChains.action, action), isNull(modelChains.projectId)))
+      .limit(1);
+    if (existing) continue;
+
+    const [chain] = await db
+      .insert(modelChains)
+      .values({ projectId: null, action, enabled: true })
+      .returning();
+    if (!chain) continue;
+
+    await db.insert(modelChainSteps).values(
+      DEFAULT_MODELS.map((model, index) => ({
+        chainId: chain.id,
+        position: index,
+        provider: 'gemini' as const,
+        model,
+        params: {},
+        promptId: null,
+        keyPreference: 'project_then_global' as const,
+      })),
+    );
+
+    logger.info({ action, models: DEFAULT_MODELS }, 'seeded default global chain');
+  }
+}
+
+/** Replaces a chain's steps wholesale — the editor always submits the full order. */
+export async function saveChain(
+  action: AiAction,
+  projectId: string | null,
+  steps: Omit<ChainStep, 'id' | 'position'>[],
+  enabled = true,
+): Promise<ResolvedChain> {
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(modelChains)
+      .where(
+        and(
+          eq(modelChains.action, action),
+          projectId ? eq(modelChains.projectId, projectId) : isNull(modelChains.projectId),
+        ),
+      )
+      .limit(1);
+
+    const chainId =
+      existing?.id ??
+      (
+        await tx.insert(modelChains).values({ projectId, action, enabled }).returning()
+      )[0]?.id;
+
+    if (!chainId) throw new Error('chain upsert returned no row');
+
+    if (existing) {
+      await tx
+        .update(modelChains)
+        .set({ enabled, updatedAt: new Date() })
+        .where(eq(modelChains.id, chainId));
+      await tx.delete(modelChainSteps).where(eq(modelChainSteps.chainId, chainId));
+    }
+
+    if (steps.length > 0) {
+      await tx.insert(modelChainSteps).values(
+        steps.map((step, index) => ({
+          chainId,
+          position: index,
+          provider: step.provider,
+          model: step.model,
+          params: step.params,
+          promptId: step.promptId,
+          keyPreference: step.keyPreference,
+        })),
+      );
+    }
+
+    const saved = await loadChainTx(tx, chainId);
+    if (!saved) throw new Error('chain vanished after save');
+    return saved;
+  });
+}
+
+async function loadChainTx(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  chainId: string,
+): Promise<ResolvedChain | null> {
+  const [chain] = await tx.select().from(modelChains).where(eq(modelChains.id, chainId)).limit(1);
+  if (!chain) return null;
+
+  const steps = await tx
+    .select()
+    .from(modelChainSteps)
+    .where(eq(modelChainSteps.chainId, chainId))
+    .orderBy(asc(modelChainSteps.position));
+
+  return {
+    id: chain.id,
+    projectId: chain.projectId,
+    action: chain.action,
+    enabled: chain.enabled,
+    steps: steps.map((step) => ({
+      id: step.id,
+      position: step.position,
+      provider: step.provider,
+      model: step.model,
+      params: (step.params ?? {}) as ChainStep['params'],
+      promptId: step.promptId,
+      keyPreference: step.keyPreference,
+    })),
+  };
+}
+
+/** Removes a project override so the global chain applies again. */
+export async function clearChainOverride(action: AiAction, projectId: string): Promise<void> {
+  await db
+    .delete(modelChains)
+    .where(and(eq(modelChains.action, action), eq(modelChains.projectId, projectId)));
+}

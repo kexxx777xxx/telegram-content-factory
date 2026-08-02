@@ -4,8 +4,10 @@ import {
   AI_PROVIDERS,
   IMAGE_MODES,
   KEY_PREFERENCES,
+  KEY_SCOPES,
   MISS_POLICIES,
   PROJECT_STATUSES,
+  PROMPT_SCOPES,
   PUBLISH_MODES,
   SCHEDULE_MODES,
 } from './enums.js';
@@ -183,6 +185,129 @@ export const modelChainSchema = z.object({
   steps: z.array(modelChainStepSchema).min(1).max(10),
 });
 export type ModelChain = z.infer<typeof modelChainSchema>;
+
+/* ── API keys ─────────────────────────────────────────────────────────────── */
+
+export const apiKeyInputSchema = z.object({
+  provider: z.enum(AI_PROVIDERS).default('gemini'),
+  label: z.string().min(1).max(120),
+  secret: z.string().min(10),
+  scope: z.enum(KEY_SCOPES),
+  projectId: z.string().uuid().nullable().default(null),
+  enabled: z.boolean().default(true),
+  /** Proactive per-minute ceiling. null = react to 429 only. */
+  rpmLimit: z.number().int().min(1).max(10_000).nullable().default(null),
+  dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable().default(null),
+});
+export type ApiKeyInput = z.infer<typeof apiKeyInputSchema>;
+
+export const apiKeyUpdateSchema = apiKeyInputSchema
+  .partial()
+  .omit({ scope: true, projectId: true })
+  .extend({ secret: z.union([z.literal(''), z.string().min(10)]).optional() });
+export type ApiKeyUpdate = z.infer<typeof apiKeyUpdateSchema>;
+
+export const apiKeyDtoSchema = z.object({
+  id: z.string().uuid(),
+  provider: z.enum(AI_PROVIDERS),
+  label: z.string(),
+  secretMask: z.string(),
+  scope: z.enum(KEY_SCOPES),
+  projectId: z.string().uuid().nullable(),
+  projectName: z.string().nullable(),
+  enabled: z.boolean(),
+  rpmLimit: z.number().int().nullable(),
+  dailyRequestBudget: z.number().int().nullable(),
+  /** Today's counters, so budget pressure is visible before it bites. */
+  usageToday: z.object({ requests: z.number(), inputTokens: z.number(), outputTokens: z.number() }),
+  blockedModels: z.array(z.object({ model: z.string(), blockedUntil: z.string() })),
+  createdAt: z.string(),
+});
+export type ApiKeyDto = z.infer<typeof apiKeyDtoSchema>;
+
+export const modelInfoSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  inputTokenLimit: z.number(),
+  outputTokenLimit: z.number(),
+  supportsText: z.boolean(),
+  supportsImage: z.boolean(),
+});
+export type ModelInfo = z.infer<typeof modelInfoSchema>;
+
+/* ── generation config (chains + prompts) ─────────────────────────────────── */
+
+export const chainStepInputSchema = z.object({
+  provider: z.enum(AI_PROVIDERS).default('gemini'),
+  model: z.string().min(1),
+  params: z
+    .object({
+      temperature: z.number().min(0).max(2).optional(),
+      maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
+      thinkingBudget: z.number().int().min(0).optional(),
+    })
+    .default({}),
+  promptId: z.string().uuid().nullable().default(null),
+  keyPreference: z.enum(KEY_PREFERENCES).default('project_then_global'),
+});
+export type ChainStepInput = z.infer<typeof chainStepInputSchema>;
+
+/**
+ * One action's effective configuration, plus where each part came from — the UI
+ * renders "Успадковано з глобальних" from these flags rather than guessing.
+ */
+export const actionConfigSchema = z.object({
+  action: z.enum(AI_ACTIONS),
+  steps: z.array(chainStepInputSchema),
+  chainInherited: z.boolean(),
+  prompt: z.object({
+    body: z.string(),
+    version: z.number().int(),
+    scope: z.enum(PROMPT_SCOPES),
+  }),
+  promptInherited: z.boolean(),
+});
+export type ActionConfig = z.infer<typeof actionConfigSchema>;
+
+export const saveActionConfigSchema = z.object({
+  steps: z.array(chainStepInputSchema).min(1).max(10).optional(),
+  promptBody: z.string().min(1).max(20_000).optional(),
+});
+
+/* ── dry run ──────────────────────────────────────────────────────────────── */
+
+export const dryRunInputSchema = z.object({
+  action: z.enum(AI_ACTIONS),
+  /** Restricts the run to one model instead of walking the whole chain. */
+  model: z.string().optional(),
+  variables: z.record(z.string(), z.string()).default({}),
+});
+export type DryRunInput = z.infer<typeof dryRunInputSchema>;
+
+export const chainAttemptSchema = z.object({
+  position: z.number().int(),
+  model: z.string(),
+  keyLabel: z.string(),
+  keyScope: z.enum(KEY_SCOPES),
+  outcome: z.enum(['success', 'rate_limited', 'auth_failed', 'invalid', 'error', 'skipped']),
+  detail: z.string().optional(),
+  retryAt: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+export type ChainAttemptDto = z.infer<typeof chainAttemptSchema>;
+
+export const dryRunResultSchema = z.object({
+  ok: z.boolean(),
+  text: z.string().nullable(),
+  model: z.string().nullable(),
+  promptScope: z.enum(PROMPT_SCOPES).nullable(),
+  promptVersion: z.number().int().nullable(),
+  usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }).nullable(),
+  attempts: z.array(chainAttemptSchema),
+  error: z.string().nullable(),
+  renderedPrompt: z.string().nullable(),
+});
+export type DryRunResult = z.infer<typeof dryRunResultSchema>;
 
 export const loginSchema = z.object({
   password: z.string().min(1),

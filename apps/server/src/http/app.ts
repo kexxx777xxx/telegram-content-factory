@@ -3,7 +3,9 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import helmet from 'helmet';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { generationRouter } from '../api/routes/generation.js';
 import { healthRouter } from '../api/routes/health.js';
+import { keysRouter } from '../api/routes/keys.js';
 import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
 import { config, env } from '../config.js';
@@ -59,6 +61,8 @@ export function createApp(): Express {
   const api = express.Router();
   api.use(requireAuth, csrfGuard);
   api.use(projectsRouter);
+  api.use(keysRouter);
+  api.use(generationRouter);
   app.use('/api', api);
 
   // Built SPA, when present. In dev the Vite server owns this and proxies /api.

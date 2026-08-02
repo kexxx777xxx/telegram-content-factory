@@ -1,8 +1,10 @@
+import { ensureDefaultChains } from './ai/chains.js';
 import { authWarnings, env } from './config.js';
 import { checkDatabase, closeDatabase } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { createApp } from './http/app.js';
 import { logger } from './logger.js';
+import { ensureDefaultPrompts } from './prompts/resolve.js';
 
 async function main() {
   for (const line of authWarnings()) logger.warn(line);
@@ -17,6 +19,11 @@ async function main() {
   if (env.AUTO_MIGRATE) {
     await runMigrations();
   }
+
+  // Idempotent: existing rows are never overwritten, so operator edits survive
+  // restarts while a fresh database still boots with a working configuration.
+  await ensureDefaultPrompts();
+  await ensureDefaultChains();
 
   const app = createApp();
   const server = app.listen(env.PORT, env.ADMIN_BIND_HOST, () => {

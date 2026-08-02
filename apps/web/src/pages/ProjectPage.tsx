@@ -3,6 +3,7 @@ import { AlertCircle, ArrowLeft, Check, Loader2, PlugZap, Trash2, X } from 'luci
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { GenerationConfig } from '../components/GenerationConfig';
 import {
   ProjectForm,
   emptyForm,
@@ -85,6 +86,8 @@ export function ProjectPage() {
       <ProjectForm value={form} onChange={setForm} mode={isNew ? 'create' : 'edit'} />
 
       {!isNew && project && <TelegramCard project={project} />}
+
+      {!isNew && project && <GenerationConfig projectId={project.id} />}
 
       <div className="flex items-center gap-3">
         <Button onClick={() => void save()} disabled={saving}>

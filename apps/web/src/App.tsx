@@ -1,4 +1,4 @@
-import { AlertTriangle, Database, Loader2, LogOut, Radio } from 'lucide-react';
+import { AlertTriangle, Database, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import type { Health } from '@tcf/shared';
@@ -6,6 +6,7 @@ import { api, ApiError, type SessionState } from './api/client';
 import { LoginScreen } from './pages/LoginScreen';
 import { ProjectPage } from './pages/ProjectPage';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 export function App() {
   const [session, setSession] = useState<SessionState | null>(null);
@@ -55,6 +56,10 @@ export function App() {
               <span className="font-semibold">Telegram Content Factory</span>
             </Link>
             <div className="ml-auto flex items-center gap-4 text-sm text-slate-500">
+              <Link to="/settings" className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100">
+                <SlidersHorizontal className="size-4" />
+                Налаштування
+              </Link>
               <DatabaseBadge health={health} />
               {session?.authEnabled && (
                 <button
@@ -74,6 +79,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<ProjectsPage />} />
             <Route path="/projects/:id" element={<ProjectPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>

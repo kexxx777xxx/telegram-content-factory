@@ -111,14 +111,87 @@
 
 `204`. Каскадом видаляє теми, пости та джоби проєкту.
 
+### `GET/POST/PATCH/DELETE /api/keys`
+
+Ключі провайдерів. Секрет шифрується AES-256-GCM; назовні — маска.
+`PATCH` із `secret: ""` означає «залишити збережений» — той самий контракт, що й для бот-токенів.
+
+Обмеження: `scope: 'project'` вимагає `projectId`, `scope: 'global'` — забороняє його.
+Один проєктний ключ на провайдера (`409` на другий), щоб ланцюжок не гадав, який із двох брати.
+
+DTO містить `usageToday` і `blockedModels` — тиск на бюджет і відкриті запобіжники видно
+до того, як вони зірвуть слот.
+
+### `POST /api/keys/:id/verify`
+
+Читає каталог моделей цим ключем. Дешево й відповідає на єдине питання, що має значення при
+налаштуванні: чи ключ узагалі приймуть.
+
+### `GET /api/models`
+
+Каталог від провайдера, кеш на годину, `?refresh=true` — примусово.
+
+**ID моделей ніколи не хардкодяться.** У PRD фігурував `gemini-3.0-flash`, якого в каталозі
+не існує — захардкоджений ланцюжок упав би на першому ж слоті з незрозумілим 404.
+
+`409`, якщо немає жодного активного ключа.
+
+### `GET /api/config/generation?projectId=<uuid>`
+
+Ефективна конфігурація всіх пʼяти дій. Без `projectId` — глобальні дефолти.
+
+Кожен запис несе `chainInherited` і `promptInherited`: саме з них UI малює бейдж
+«Успадковано з глобальних», а не здогадується.
+
+### `PUT /api/config/generation/:action?projectId=<uuid>`
+
+Тіло: `{ steps?, promptBody? }`. `steps` замінюють ланцюжок цілком (редактор завжди надсилає
+повний порядок). `promptBody` створює **нову версію** — наявний рядок не мутується, бо
+опубліковані пости посилаються на конкретну версію.
+
+### `DELETE /api/config/generation/:action?projectId=<uuid>&chain=&prompt=`
+
+Прибирає override проєкту, повертаючи глобальну конфігурацію.
+
+### `POST /api/projects/:id/dry-run`
+
+Тіло: `{ action, model?, variables? }`. Виконує **справжній** виклик, нічого не зберігає.
+`model` обмежує запуск однією моделлю замість усього ланцюжка.
+
+Повертає не лише текст, а весь слід спроб:
+
+```json
+{
+  "ok": true,
+  "text": "…",
+  "model": "gemini-3.5-flash-lite",
+  "promptScope": "project",
+  "promptVersion": 1,
+  "usage": { "inputTokens": 329, "outputTokens": 374 },
+  "attempts": [
+    { "position": 0, "model": "gemini-3.5-flash", "keyLabel": "Global Gemini",
+      "keyScope": "global", "outcome": "skipped",
+      "detail": "Пара «ключ + модель» заблокована після 429", "retryAt": "…" },
+    { "position": 1, "model": "gemini-3.5-flash-lite", "keyLabel": "Global Gemini",
+      "keyScope": "global", "outcome": "success", "durationMs": 2248 }
+  ],
+  "error": null,
+  "renderedPrompt": "…"
+}
+```
+
+Слід спроб — головна частина відповіді: коли ланцюжок поводиться не так, корисне питання не
+«що вийшло», а «який крок відповів і чому мовчали попередні».
+
+Завжди `200`: вичерпаний ланцюжок — це діагностика, а не помилка запиту. У `error` тоді
+вказано найранішій час, коли щось може спрацювати знову.
+
 ## Заплановано
 
 Зʼявиться у відповідних фазах; описується тут у міру реалізації.
 
 | Маршрут | Фаза |
 | --- | --- |
-| `GET/POST /api/keys`, `GET /api/models` | 2 |
-| `GET/PUT /api/projects/:id/prompts`, `/chains`, `POST /api/dry-run` | 2 |
 | `GET/POST/DELETE /api/projects/:id/topics` | 3 |
 | `GET /api/jobs`, `POST /api/jobs/:id/retry` | 4 |
 | `GET/PATCH /api/projects/:id/posts` | 5 |

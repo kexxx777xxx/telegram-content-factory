@@ -116,6 +116,8 @@ export const apiKeys = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     /** Soft cap enforced by the limiter; the shared global key gets the tightest one. */
     dailyRequestBudget: integer('daily_request_budget'),
+    /** Proactive requests-per-minute ceiling. NULL = react to 429 only. */
+    rpmLimit: integer('rpm_limit'),
     createdAt,
     updatedAt,
   },
@@ -325,6 +327,29 @@ export const rateLimitState = pgTable(
     primaryKey({ columns: [t.apiKeyId, t.model] }),
     index('rate_limit_blocked_idx').on(t.blockedUntil),
   ],
+);
+
+/**
+ * Per-key, per-day counters. Serves two purposes: enforcing
+ * `api_keys.daily_request_budget` (which the shared global key needs most), and
+ * feeding the spend view on the dashboard without keeping raw request logs.
+ */
+export const apiKeyUsage = pgTable(
+  'api_key_usage',
+  {
+    apiKeyId: uuid('api_key_id')
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: 'cascade' }),
+    /** Calendar day in UTC; budgets are a coarse guard, not a billing boundary. */
+    day: text('day').notNull(),
+    model: text('model').notNull(),
+    requests: integer('requests').notNull().default(0),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    failures: integer('failures').notNull().default(0),
+    updatedAt,
+  },
+  (t) => [primaryKey({ columns: [t.apiKeyId, t.day, t.model] }), index('api_key_usage_day_idx').on(t.day)],
 );
 
 /* ── audit ────────────────────────────────────────────────────────────────── */

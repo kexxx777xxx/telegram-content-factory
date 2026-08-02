@@ -1,5 +1,14 @@
 import type {
+  ActionConfig,
+  AiAction,
+  ApiKeyDto,
+  ApiKeyInput,
+  ApiKeyUpdate,
+  ChainStepInput,
+  DryRunInput,
+  DryRunResult,
   Health,
+  ModelInfo,
   ProjectDto,
   ProjectInput,
   ProjectUpdate,
@@ -58,4 +67,44 @@ export const api = {
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   verifyTelegram: (id: string) =>
     request<TelegramCheck>(`/projects/${id}/verify-telegram`, { method: 'POST' }),
+
+  listKeys: () => request<ApiKeyDto[]>('/keys'),
+  createKey: (input: ApiKeyInput) =>
+    request<{ id: string }>('/keys', { method: 'POST', body: JSON.stringify(input) }),
+  updateKey: (id: string, patch: ApiKeyUpdate) =>
+    request<void>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteKey: (id: string) => request<void>(`/keys/${id}`, { method: 'DELETE' }),
+  verifyKey: (id: string) =>
+    request<{ ok: boolean; modelCount: number; problems: string[] }>(`/keys/${id}/verify`, {
+      method: 'POST',
+    }),
+
+  listModels: (refresh = false) => request<ModelInfo[]>(`/models${refresh ? '?refresh=true' : ''}`),
+
+  getGenerationConfig: (projectId?: string) =>
+    request<ActionConfig[]>(`/config/generation${projectId ? `?projectId=${projectId}` : ''}`),
+  saveGenerationConfig: (
+    action: AiAction,
+    projectId: string | undefined,
+    body: { steps?: ChainStepInput[]; promptBody?: string },
+  ) =>
+    request<ActionConfig[]>(
+      `/config/generation/${action}${projectId ? `?projectId=${projectId}` : ''}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  clearGenerationOverride: (
+    action: AiAction,
+    projectId: string,
+    what: { chain?: boolean; prompt?: boolean },
+  ) =>
+    request<ActionConfig[]>(
+      `/config/generation/${action}?projectId=${projectId}&chain=${what.chain !== false}&prompt=${what.prompt !== false}`,
+      { method: 'DELETE' },
+    ),
+
+  dryRun: (projectId: string, input: DryRunInput) =>
+    request<DryRunResult>(`/projects/${projectId}/dry-run`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
 };
