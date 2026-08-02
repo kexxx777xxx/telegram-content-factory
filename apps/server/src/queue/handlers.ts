@@ -1,5 +1,6 @@
 import { JOB_TYPES, type JobType } from '@tcf/shared';
 import { ChainExhaustedError, ChainMissingError } from '../ai/chain.js';
+import { generatePostText, PostNotFoundError } from '../services/posts.js';
 import { getProject } from '../services/projects.js';
 import { replenishTopics } from '../services/topics.js';
 import { runPrune } from './prune.js';
@@ -27,6 +28,24 @@ async function handleReplenishTopics({ job, log }: JobContext): Promise<void> {
   }
 }
 
+async function handleGeneratePost({ job, log }: JobContext): Promise<void> {
+  const postId = (job.payload as { postId?: unknown }).postId;
+  if (typeof postId !== 'string') throw new PermanentJobFailure('generate_post без postId');
+
+  try {
+    const outcome = await generatePostText(postId);
+    log.info({ postId, outcome }, 'generate_post finished');
+  } catch (err) {
+    if (err instanceof PostNotFoundError || err instanceof ChainMissingError) {
+      throw new PermanentJobFailure(err.message);
+    }
+    if (err instanceof ChainExhaustedError) {
+      throw new RescheduleJob(err.retryAt ?? new Date(Date.now() + 15 * 60_000), err.message);
+    }
+    throw err;
+  }
+}
+
 async function handlePrune({ log }: JobContext): Promise<void> {
   const report = await runPrune();
   log.info(report, 'prune finished');
@@ -37,6 +56,7 @@ async function handlePrune({ log }: JobContext): Promise<void> {
  * half-built phase cannot fill the queue with jobs nothing can execute.
  */
 export const handlers: HandlerRegistry = {
+  generate_post: handleGeneratePost,
   replenish_topics: handleReplenishTopics,
   prune: handlePrune,
 };

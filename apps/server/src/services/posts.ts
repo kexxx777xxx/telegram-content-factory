@@ -1,0 +1,252 @@
+import type { PostStatus } from '@tcf/shared';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js';
+import { db } from '../db/client.js';
+import { posts, projects, topics, type Post, type Project } from '../db/schema.js';
+import { logger } from '../logger.js';
+import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
+import { takeNextTopic } from './topics.js';
+
+export class PostNotFoundError extends Error {}
+
+/** Statuses a generation job may legitimately start from. */
+const GENERATABLE: PostStatus[] = ['planned', 'failed'];
+
+export interface GenerationMeta {
+  model?: string;
+  promptId?: string;
+  promptVersion?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  attempts?: number;
+  generatedAt?: string;
+  removedTags?: string[];
+  visibleLength?: number;
+}
+
+export async function getPost(id: string): Promise<Post> {
+  const [row] = await db.select().from(posts).where(eq(posts.id, id)).limit(1);
+  if (!row) throw new PostNotFoundError('Пост не знайдено');
+  return row;
+}
+
+export async function listPosts(projectId: string, limit = 100): Promise<Post[]> {
+  return db
+    .select()
+    .from(posts)
+    .where(eq(posts.projectId, projectId))
+    .orderBy(desc(posts.scheduledAt))
+    .limit(limit);
+}
+
+/**
+ * Produces the post text for a planned slot.
+ *
+ * Idempotent by status: a job that runs twice (a retry after an ambiguous
+ * failure, say) finds the post already past `planned` and does nothing rather
+ * than spending another model call and overwriting a draft someone may have
+ * edited by hand.
+ */
+export async function generatePostText(postId: string): Promise<'generated' | 'skipped'> {
+  const post = await getPost(postId);
+  const log = logger.child({ post_id: post.id, project_id: post.projectId });
+
+  if (!GENERATABLE.includes(post.status)) {
+    log.info({ status: post.status }, 'post already past planning, generation skipped');
+    return 'skipped';
+  }
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, post.projectId)).limit(1);
+  if (!project) throw new ChainMissingError('Проєкт поста не існує');
+
+  await db
+    .update(posts)
+    .set({ status: 'generating', error: null, updatedAt: new Date() })
+    .where(eq(posts.id, post.id));
+
+  try {
+    const topic = await ensureTopic(post, project);
+    if (!topic) {
+      throw new ChainMissingError('Немає доступної теми і не вдалося згенерувати нову');
+    }
+
+    const result = await runChain({
+      action: 'post_text',
+      projectId: project.id,
+      variables: {
+        topic: topic.title,
+        persona: project.persona,
+        language: project.language,
+        hashtags: project.hashtags.join(' '),
+      },
+    });
+
+    // The model was asked for a restricted tag set; this is what enforces it.
+    const clean = sanitizeTelegramHtml(result.text);
+    if (clean.removedTags.length > 0) {
+      log.info({ removedTags: clean.removedTags }, 'model returned markup outside the allowed set');
+    }
+
+    const meta: GenerationMeta = {
+      model: result.model,
+      promptId: result.promptId,
+      promptVersion: result.promptVersion,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      attempts: result.attempts.length,
+      generatedAt: new Date().toISOString(),
+      removedTags: clean.removedTags,
+      visibleLength: visibleLength(clean.html),
+    };
+
+    await db
+      .update(posts)
+      .set({
+        textHtml: clean.html,
+        topicTitle: topic.title,
+        // Image generation joins this handler in phase 6; until then a post with
+        // text is as ready as it gets.
+        status: project.publishMode === 'approval' ? 'awaiting_approval' : 'ready',
+        generation: meta,
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, post.id));
+
+    log.info(
+      { model: result.model, chars: meta.visibleLength, topic: topic.title },
+      'post text generated',
+    );
+    return 'generated';
+  } catch (err) {
+    // Back to `planned` so the queue's own retry can pick it up cleanly; the
+    // topic stays attached so a retry does not consume a second one.
+    const terminal = err instanceof ChainMissingError;
+    await db
+      .update(posts)
+      .set({
+        status: terminal ? 'failed' : 'planned',
+        error: err instanceof Error ? err.message : String(err),
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, post.id));
+
+    if (terminal) await releaseTopic(post.topicId);
+    throw err;
+  }
+}
+
+/**
+ * Binds a topic to the post before any model call.
+ *
+ * Attaching it up front is what makes retries safe: the topic is claimed once,
+ * and a failed attempt reuses the same one instead of draining the bank one
+ * retry at a time.
+ */
+async function ensureTopic(post: Post, project: Project) {
+  if (post.topicId) {
+    const [existing] = await db.select().from(topics).where(eq(topics.id, post.topicId)).limit(1);
+    if (existing) return existing;
+  }
+
+  const topic = await takeNextTopic({
+    id: project.id,
+    persona: project.persona,
+    language: project.language,
+    topicsBufferMin: project.topicsBufferMin,
+  });
+  if (!topic) return null;
+
+  await db
+    .update(posts)
+    .set({ topicId: topic.id, topicTitle: topic.title, updatedAt: new Date() })
+    .where(eq(posts.id, post.id));
+
+  return topic;
+}
+
+async function releaseTopic(topicId: string | null): Promise<void> {
+  if (!topicId) return;
+  await db
+    .update(topics)
+    .set({ status: 'new' })
+    .where(and(eq(topics.id, topicId), eq(topics.status, 'queued')));
+}
+
+/** Manual edit of a draft. Sanitised on the way in, same as generated text. */
+export async function updatePostText(id: string, textHtml: string): Promise<Post> {
+  const post = await getPost(id);
+  if (post.status === 'published') {
+    throw new PostNotFoundError('Опублікований пост редагувати не можна — текст уже стерто');
+  }
+
+  const clean = sanitizeTelegramHtml(textHtml);
+
+  // `removedTags` must describe *this* edit, not the original generation —
+  // otherwise the editor reports nothing while quietly rewriting what was typed.
+  const meta: GenerationMeta & { editedAt: string } = {
+    ...(post.generation as GenerationMeta),
+    editedAt: new Date().toISOString(),
+    removedTags: clean.removedTags,
+    visibleLength: visibleLength(clean.html),
+  };
+
+  const [row] = await db
+    .update(posts)
+    .set({ textHtml: clean.html, generation: meta, updatedAt: new Date() })
+    .where(eq(posts.id, id))
+    .returning();
+
+  if (!row) throw new PostNotFoundError('Пост не знайдено');
+  return row;
+}
+
+/** Puts a post back to `planned` so a fresh generation job can run. */
+export async function resetForRegeneration(id: string, keepTopic: boolean): Promise<Post> {
+  const post = await getPost(id);
+  if (post.status === 'published') {
+    throw new PostNotFoundError('Опублікований пост не перегенерувати');
+  }
+
+  if (!keepTopic) await releaseTopic(post.topicId);
+
+  const [row] = await db
+    .update(posts)
+    .set({
+      status: 'planned',
+      textHtml: null,
+      error: null,
+      ...(keepTopic ? {} : { topicId: null, topicTitle: null }),
+      updatedAt: new Date(),
+    })
+    .where(eq(posts.id, id))
+    .returning();
+
+  if (!row) throw new PostNotFoundError('Пост не знайдено');
+  return row;
+}
+
+export async function postCounts(projectId: string): Promise<Record<string, number>> {
+  const rows = await db
+    .select({ status: posts.status, count: sql<number>`count(*)::int` })
+    .from(posts)
+    .where(eq(posts.projectId, projectId))
+    .groupBy(posts.status);
+  return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+}
+
+/** Posts still ahead of their slot — the buffer depth the dashboard reports. */
+export async function upcomingPosts(projectId: string): Promise<Post[]> {
+  return db
+    .select()
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, projectId),
+        inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
+      ),
+    )
+    .orderBy(asc(posts.scheduledAt));
+}
+
+export { ChainExhaustedError };

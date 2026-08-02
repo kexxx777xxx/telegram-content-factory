@@ -11,6 +11,7 @@ import type {
   ModelInfo,
   ProjectDto,
   ProjectInput,
+  PostsPage,
   ProjectUpdate,
   ReplenishReportDto,
   TelegramCheck,
@@ -129,6 +130,15 @@ export const api = {
       '/scheduler/plan',
       { method: 'POST' },
     ),
+
+  listPosts: (projectId: string) => request<PostsPage>(`/projects/${projectId}/posts`),
+  updatePost: (postId: string, textHtml: string) =>
+    request<unknown>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify({ textHtml }) }),
+  regeneratePost: (postId: string, keepTopic: boolean) =>
+    request<unknown>(`/posts/${postId}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({ keepTopic }),
+    }),
 
   listTopics: (projectId: string) => request<TopicsPage>(`/projects/${projectId}/topics`),
   importTopics: (projectId: string, text: string) =>

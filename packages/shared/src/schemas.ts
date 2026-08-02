@@ -6,6 +6,7 @@ import {
   KEY_PREFERENCES,
   KEY_SCOPES,
   MISS_POLICIES,
+  POST_STATUSES,
   PROJECT_STATUSES,
   PROMPT_SCOPES,
   PUBLISH_MODES,
@@ -356,6 +357,39 @@ export const replenishReportSchema = z.object({
   model: z.string(),
 });
 export type ReplenishReportDto = z.infer<typeof replenishReportSchema>;
+
+/* ── posts ────────────────────────────────────────────────────────────────── */
+
+export const postDtoSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  status: z.enum(POST_STATUSES),
+  scheduledAt: z.string(),
+  publishedAt: z.string().nullable(),
+  topicTitle: z.string().nullable(),
+  /** null once published — only the permalink survives (ADR 0002). */
+  textHtml: z.string().nullable(),
+  imageKind: z.string().nullable(),
+  hasImage: z.boolean(),
+  permalink: z.string().nullable(),
+  error: z.string().nullable(),
+  generation: z.object({
+    model: z.string().nullable(),
+    promptVersion: z.number().int().nullable(),
+    visibleLength: z.number().int().nullable(),
+    /** Markup the sanitiser stripped — makes silent rewriting visible. */
+    removedTags: z.array(z.string()),
+    generatedAt: z.string().nullable(),
+  }),
+  updatedAt: z.string(),
+});
+export type PostDto = z.infer<typeof postDtoSchema>;
+
+export const postsPageSchema = z.object({
+  posts: z.array(postDtoSchema),
+  counts: z.record(z.string(), z.number()),
+});
+export type PostsPage = z.infer<typeof postsPageSchema>;
 
 export const loginSchema = z.object({
   password: z.string().min(1),
