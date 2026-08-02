@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Real config; `app.env.example` is the committed template.
+app.env
+.env
+.env.local
+.env.*.local
+
+# Staging media for buffered posts — regenerable, never committed or backed up
+data/
+
+.DS_Store
+*.log
+coverage/
+.vite/
+
+# Editor / tooling local state
+.idea/
+.vscode/
+.claude/settings.local.json

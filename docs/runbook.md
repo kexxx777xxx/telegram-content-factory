@@ -1,0 +1,118 @@
+# Runbook
+
+## Перший запуск
+
+```bash
+cp app.env.example app.env
+```
+
+Згенерувати обовʼязкові секрети:
+
+```bash
+node -e "console.log('APP_ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```bash
+node -e "console.log('SESSION_SECRET='+require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```bash
+npm run -w @tcf/server hash-password -- 'ваш-пароль'
+```
+
+Вставити результати в `app.env` (`APP_ENCRYPTION_KEY`, `SESSION_SECRET`, `ADMIN_PASSWORD_HASH`).
+
+> `APP_ENCRYPTION_KEY` шифрує бот-токени й API-ключі. **Втрата ключа = втрата всіх секретів**
+> у базі; їх доведеться вводити заново. Зберігати окремо від бекапу БД.
+
+## Продакшн
+
+```bash
+docker compose up -d
+```
+
+Міграції застосовуються на старті (`AUTO_MIGRATE=true`), тож чистий том працює без окремого кроку.
+Адмінка — на `127.0.0.1:3000`; назовні виставляти тільки через reverse proxy з TLS.
+
+## Локальна розробка
+
+```bash
+docker compose up -d db
+```
+
+```bash
+npm run db:migrate && npm run dev
+```
+
+Server на `:3000`, Vite на `:5173` з проксі `/api`. Відкривати `http://localhost:5173`
+(Vite слухає на `::1`, тому `127.0.0.1:5173` не відповість).
+
+## Змінні оточення
+
+Повний перелік із коментарями — в `app.env.example`. Ті, що найчастіше плутають:
+
+| Змінна | Що робить |
+| --- | --- |
+| `ADMIN_AUTH_ENABLED` | `false` вимикає логін повністю. Лог пише warn, UI показує червоний банер |
+| `ADMIN_BIND_HOST` | дефолт `127.0.0.1`. Змінювати тільки за проксі й **ніколи** разом із вимкненим auth |
+| `APP_ENCRYPTION_KEY` | 64 hex-символи. Змінити = зробити наявні секрети нечитними |
+| `POST_TEXT_RETENTION_DAYS` | `0` = стирати текст одразу при публікації (дефолт) |
+| `AUTO_MIGRATE` | застосовувати міграції на старті |
+| `ADMIN_BOT_TOKEN` | порожній = адмін-бот вимкнено; `publish_mode=auto` працює без нього |
+
+> **Чому `app.env`, а не `.env`.** Compose автозавантажує `.env` і інтерполює `$` у значеннях,
+> через що argon2-хеш приїжджає понівеченим. Див.
+> [ADR 0006](adr/0006-npm-workspaces-and-app-env.md). Не перейменовувати назад.
+
+## Бекап і відновлення
+
+```bash
+docker compose exec -T db pg_dump -U tcf tcf | gzip > backup-$(date +%F).sql.gz
+```
+
+```bash
+gunzip -c backup-2026-08-02.sql.gz | docker compose exec -T db psql -U tcf -d tcf
+```
+
+Том `media_staging` бекапити **не треба**: там лише зображення постів, що ще чекають слоту, і вони
+відновлюються перегенерацією. Опубліковане живе в Telegram.
+
+Бекап без `APP_ENCRYPTION_KEY` марний — токени й ключі не розшифруються.
+
+## Типові інциденти
+
+**Канал пропустив слот.** Дивитись глибину буфера проєкту. Якщо `posts_buffer = 0` — це JIT-режим,
+слот залежав від моделі в момент публікації; або збільшити буфер, або дивитись `rate_limit_state`.
+
+**Пости не генеруються ні в кого.** Перевірити `rate_limit_state`: чи не заблоковані всі пари
+`(ключ, модель)`.
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -c "select api_key_id, model, blocked_until, requests_used from rate_limit_state where blocked_until > now();"
+```
+
+**Джоби копичаться.** Подивитись чергу:
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -c "select type, status, count(*) from jobs group by 1,2 order by 3 desc;"
+```
+
+`status = 'dead'` означає вичерпані `max_attempts` — дивитись `last_error`.
+
+**Пароль не підходить після зміни конфігу.** Майже завжди це інтерполяція `$` у хеші. Перевірити,
+що прийшло в контейнер:
+
+```bash
+docker compose exec -T app printenv ADMIN_PASSWORD_HASH
+```
+
+**Застрягла джоба в `running`.** Воркер помер, не знявши лок. Перевірити `locked_at`; джоби,
+старші за таймаут, підбирає reaper (фаза 4).
+
+## Оновлення
+
+```bash
+docker compose build app && docker compose up -d app
+```
+
+Міграції застосуються на старті. Відкат схеми не автоматизований — відкочувати з бекапу.

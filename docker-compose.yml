@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tcf
+      POSTGRES_PASSWORD: tcf
+      POSTGRES_DB: tcf
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tcf -d tcf']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      # `format: raw` disables compose interpolation. Without it the `$` in an
+      # argon2 hash ($argon2id$v=19$m=…) is read as variable references and
+      # ADMIN_PASSWORD_HASH silently arrives mangled. The file is named app.env
+      # rather than .env for the same reason — see app.env.example.
+      - path: app.env
+        format: raw
+    environment:
+      # These win over .env: inside the container the values are fixed.
+      NODE_ENV: production
+      DATABASE_URL: postgres://tcf:tcf@db:5432/tcf
+      # Inside the container the app must listen on all interfaces; the port
+      # publication below is what actually decides who can reach it.
+      ADMIN_BIND_HOST: 0.0.0.0
+      MEDIA_STAGING_DIR: /app/data/media
+    ports:
+      - '127.0.0.1:3000:3000'
+    volumes:
+      # Staging only: buffered posts awaiting their slot. Regenerable, not backed up.
+      - media_staging:/app/data/media
+
+volumes:
+  db_data:
+  media_staging:

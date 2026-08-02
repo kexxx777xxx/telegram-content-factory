@@ -1,0 +1,31 @@
+{
+  "name": "telegram-content-factory",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev -w @tcf/server",
+    "dev:web": "npm run dev -w @tcf/web",
+    "build": "npm run build -w @tcf/server && npm run build -w @tcf/web",
+    "db:generate": "npm run db:generate -w @tcf/server",
+    "db:migrate": "npm run db:migrate -w @tcf/server",
+    "db:studio": "npm run db:studio -w @tcf/server",
+    "seed:demo": "npm run seed:demo -w @tcf/server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}
