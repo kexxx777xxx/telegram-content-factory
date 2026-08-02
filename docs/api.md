@@ -58,14 +58,65 @@
 
 Скидає куку.
 
+### `GET /api/projects`
+
+Масив проєктів, відсортований за назвою. Токен бота — завжди маска (`···cdef`) або `null`.
+
+### `POST /api/projects`
+
+Тіло — `projectInputSchema`. Обовʼязкові лише `name`, `slug`, `telegramChannelId`; решта має
+дефолти (`postsBuffer: 3`, `topicsBufferMin: 10`, `timezone: Europe/Kyiv`, розклад `09:00`/`18:00`).
+
+`telegramBotToken` необовʼязковий, але якщо переданий — не коротший за 20 символів.
+Дублікат `slug` → `409`.
+
+### `GET /api/projects/:id`
+
+### `PATCH /api/projects/:id`
+
+Тіло — `projectUpdateSchema` (часткове). Дві навмисні особливості:
+
+- **`slug` змінити не можна** — він фігурує в логах, ключах дедупу й іменах джоб. Поле просто
+  ігнорується, а не викликає помилку.
+- **`telegramBotToken: ""` означає «залишити збережений токен»**. Форма редагування ніколи не
+  отримує справжній секрет, тож надсилає порожній рядок щоразу, коли редагуються інші поля.
+  Будь-який непорожній рядок коротший за 20 символів — `400`.
+
+Зміна `telegramChannelId` скидає закешований `telegramChannelUsername`: він належав старому каналу.
+
+### `POST /api/projects/:id/verify-telegram`
+
+Пробує канал ботом проєкту: `getMe` → `getChat` → `getChatMember`. Повертає `telegramCheckSchema`:
+
+```json
+{
+  "ok": false,
+  "bot": { "id": 123, "username": "my_bot", "firstName": "My Bot" },
+  "chat": { "id": -1001234567890, "type": "channel", "title": "…", "username": "my_channel" },
+  "canPost": false,
+  "problems": ["Бот є адміністратором, але без права «Публікація повідомлень»."]
+}
+```
+
+Завжди `200` — навіть коли перевірка не пройшла: результат діагностичний, а не помилка запиту.
+Проєкт цілком легально може існувати до того, як бота додали в канал.
+
+Права публікації перевіряються **тут**, а не при першій публікації: з буфером у 3 години інакше
+проблема спливла б через півдня після налаштування.
+
+Успішний `getChat` кешує `telegramChannelUsername` — саме він потім дає публічний
+`t.me/name/123` замість непрозорого `t.me/c/…`.
+
+### `DELETE /api/projects/:id`
+
+`204`. Каскадом видаляє теми, пости та джоби проєкту.
+
 ## Заплановано
 
 Зʼявиться у відповідних фазах; описується тут у міру реалізації.
 
 | Маршрут | Фаза |
 | --- | --- |
-| `GET/POST/PATCH/DELETE /api/projects` | 1 |
-| `POST /api/projects/:id/verify-telegram` | 1 |
 | `GET/POST /api/keys`, `GET /api/models` | 2 |
 | `GET/PUT /api/projects/:id/prompts`, `/chains`, `POST /api/dry-run` | 2 |
 | `GET/POST/DELETE /api/projects/:id/topics` | 3 |

@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { healthRouter } from '../api/routes/health.js';
+import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
 import { config, env } from '../config.js';
 import { logger } from '../logger.js';
@@ -53,9 +54,11 @@ export function createApp(): Express {
   app.use('/api', healthRouter);
   app.use('/api', csrfGuard, sessionRouter);
 
-  // Everything else behind the (optionally disabled) auth wall.
+  // Everything else behind the (optionally disabled) auth wall. Express 5
+  // forwards rejected promises to the error handler, so route handlers throw.
   const api = express.Router();
   api.use(requireAuth, csrfGuard);
+  api.use(projectsRouter);
   app.use('/api', api);
 
   // Built SPA, when present. In dev the Vite server owns this and proxies /api.

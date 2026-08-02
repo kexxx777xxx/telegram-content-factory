@@ -6,6 +6,12 @@ const serverPort = process.env.PORT ?? '3000';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // In a workspace monorepo a linked package can pull React through a second
+    // resolution path, which surfaces as "Invalid hook call" from whichever
+    // library renders first. Pinning both to one copy prevents that class of bug.
+    dedupe: ['react', 'react-dom'],
+  },
   server: {
     port: 5173,
     // The API lives on the Express server; same-origin in production, proxied here.

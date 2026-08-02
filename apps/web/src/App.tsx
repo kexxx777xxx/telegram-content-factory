@@ -1,8 +1,11 @@
-import { AlertTriangle, Database, LayoutDashboard, Loader2, LogOut, Radio } from 'lucide-react';
+import { AlertTriangle, Database, Loader2, LogOut, Radio } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import type { Health } from '@tcf/shared';
 import { api, ApiError, type SessionState } from './api/client';
 import { LoginScreen } from './pages/LoginScreen';
+import { ProjectPage } from './pages/ProjectPage';
+import { ProjectsPage } from './pages/ProjectsPage';
 
 export function App() {
   const [session, setSession] = useState<SessionState | null>(null);
@@ -21,7 +24,9 @@ export function App() {
   useEffect(() => {
     refresh()
       .catch((err: unknown) => {
-        if (err instanceof ApiError && err.status === 401) setSession({ authenticated: false, authEnabled: true });
+        if (err instanceof ApiError && err.status === 401) {
+          setSession({ authenticated: false, authEnabled: true });
+        }
       })
       .finally(() => setLoading(false));
   }, [refresh]);
@@ -39,33 +44,40 @@ export function App() {
   }
 
   return (
-    <div className="flex min-h-full flex-col">
-      {session && !session.authEnabled && <AuthDisabledBanner />}
+    <BrowserRouter>
+      <div className="flex min-h-full flex-col">
+        {session && !session.authEnabled && <AuthDisabledBanner />}
 
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-6 py-4">
-          <Radio className="size-5 text-slate-500" />
-          <h1 className="font-semibold">Telegram Content Factory</h1>
-          <div className="ml-auto flex items-center gap-4 text-sm text-slate-500">
-            <DatabaseBadge health={health} />
-            {session?.authEnabled && (
-              <button
-                type="button"
-                onClick={() => void api.logout().then(() => void refresh())}
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100"
-              >
-                <LogOut className="size-4" />
-                Вийти
-              </button>
-            )}
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-5xl items-center gap-3 px-6 py-4">
+            <Link to="/" className="flex items-center gap-3">
+              <Radio className="size-5 text-slate-500" />
+              <span className="font-semibold">Telegram Content Factory</span>
+            </Link>
+            <div className="ml-auto flex items-center gap-4 text-sm text-slate-500">
+              <DatabaseBadge health={health} />
+              {session?.authEnabled && (
+                <button
+                  type="button"
+                  onClick={() => void api.logout().then(() => void refresh())}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100"
+                >
+                  <LogOut className="size-4" />
+                  Вийти
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
-        <EmptyState />
-      </main>
-    </div>
+        <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
+          <Routes>
+            <Route path="/" element={<ProjectsPage />} />
+            <Route path="/projects/:id" element={<ProjectPage />} />
+          </Routes>
+        </main>
+      </div>
+    </BrowserRouter>
   );
 }
 
@@ -86,18 +98,5 @@ function DatabaseBadge({ health }: { health: Health | null }) {
       <Database className="size-4" />
       {up ? 'База підключена' : 'База недоступна'}
     </span>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-white px-8 py-16 text-center">
-      <LayoutDashboard className="mx-auto size-8 text-slate-300" />
-      <h2 className="mt-4 text-lg font-medium">Проєктів ще немає</h2>
-      <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-        Скелет піднято: база, конфіг і авторизація працюють. Керування проєктами зʼявиться на
-        наступному кроці.
-      </p>
-    </div>
   );
 }

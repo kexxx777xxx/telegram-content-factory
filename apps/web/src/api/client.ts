@@ -1,4 +1,10 @@
-import type { Health } from '@tcf/shared';
+import type {
+  Health,
+  ProjectDto,
+  ProjectInput,
+  ProjectUpdate,
+  TelegramCheck,
+} from '@tcf/shared';
 
 export class ApiError extends Error {
   constructor(
@@ -42,4 +48,14 @@ export const api = {
   login: (password: string) =>
     request<SessionState>('/session', { method: 'POST', body: JSON.stringify({ password }) }),
   logout: () => request<SessionState>('/session', { method: 'DELETE' }),
+
+  listProjects: () => request<ProjectDto[]>('/projects'),
+  getProject: (id: string) => request<ProjectDto>(`/projects/${id}`),
+  createProject: (input: ProjectInput) =>
+    request<ProjectDto>('/projects', { method: 'POST', body: JSON.stringify(input) }),
+  updateProject: (id: string, patch: ProjectUpdate) =>
+    request<ProjectDto>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  verifyTelegram: (id: string) =>
+    request<TelegramCheck>(`/projects/${id}/verify-telegram`, { method: 'POST' }),
 };

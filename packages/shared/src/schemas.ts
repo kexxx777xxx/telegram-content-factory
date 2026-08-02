@@ -53,6 +53,8 @@ export const scheduleSchema = z
   .describe('Розклад публікацій у часовому поясі проєкту');
 export type Schedule = z.infer<typeof scheduleSchema>;
 
+const defaultSchedule: Schedule = { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] };
+
 export const projectInputSchema = z.object({
   name: z.string().min(1).max(120),
   slug: z
@@ -85,11 +87,78 @@ export const projectInputSchema = z.object({
   leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60).default(180),
   missPolicy: z.enum(MISS_POLICIES).default('publish_late'),
 
-  schedule: scheduleSchema,
+  schedule: scheduleSchema.default(defaultSchedule),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
-export const projectUpdateSchema = projectInputSchema.partial();
+/** Slug is immutable after creation: it appears in logs, jobs and dedupe keys. */
+export const projectUpdateSchema = projectInputSchema
+  .partial()
+  .omit({ slug: true })
+  .extend({
+    /**
+     * An empty string means "keep the stored token". The edit form never
+     * receives the real secret, so it submits `''` whenever the operator
+     * changes other fields without retyping it.
+     */
+    telegramBotToken: z.union([z.literal(''), z.string().min(20)]).optional(),
+  });
+export type ProjectUpdate = z.infer<typeof projectUpdateSchema>;
+
+/**
+ * What the API returns for a project. The bot token is present only as a mask —
+ * the plaintext never leaves the server, not even for the admin UI.
+ */
+export const projectDtoSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  name: z.string(),
+  status: z.enum(PROJECT_STATUSES),
+  timezone: z.string(),
+  language: z.string(),
+  persona: z.string(),
+  hashtags: z.array(z.string()),
+
+  telegramChannelId: z.string(),
+  telegramChannelUsername: z.string().nullable(),
+  botTokenMask: z.string().nullable(),
+  adminChatId: z.string().nullable(),
+
+  imageMode: z.enum(IMAGE_MODES),
+  publishMode: z.enum(PUBLISH_MODES),
+  postsBuffer: z.number().int(),
+  topicsBufferMin: z.number().int(),
+  leadTimeMinutes: z.number().int(),
+  missPolicy: z.enum(MISS_POLICIES),
+  schedule: scheduleSchema,
+
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ProjectDto = z.infer<typeof projectDtoSchema>;
+
+/**
+ * Result of probing the channel with the project's bot. `problems` is the
+ * actionable part — each entry is a sentence the operator can act on.
+ */
+export const telegramCheckSchema = z.object({
+  ok: z.boolean(),
+  bot: z
+    .object({ id: z.number(), username: z.string().nullable(), firstName: z.string() })
+    .nullable(),
+  chat: z
+    .object({
+      id: z.number(),
+      type: z.string(),
+      title: z.string().nullable(),
+      username: z.string().nullable(),
+    })
+    .nullable(),
+  /** The bot is an administrator of the channel with posting rights. */
+  canPost: z.boolean(),
+  problems: z.array(z.string()),
+});
+export type TelegramCheck = z.infer<typeof telegramCheckSchema>;
 
 export const modelChainStepSchema = z.object({
   provider: z.enum(AI_PROVIDERS),
