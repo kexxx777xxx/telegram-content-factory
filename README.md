@@ -29,11 +29,14 @@ docker compose up -d
 
 Адмінка на `http://127.0.0.1:3000`. Міграції застосовуються самі.
 
-Для розробки:
+Для розробки — **тільки база в докері, код на хості** (перезбірка не потрібна):
 
 ```bash
 docker compose up -d db && npm run db:migrate && npm run dev
 ```
+
+Сервіс `app` у `docker-compose.yml` — продакшн-образ із запеченим кодом. Щоб розробляти всередині
+докера без перезбірок, є оверлей: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`.
 
 ## Структура
 

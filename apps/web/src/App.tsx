@@ -103,12 +103,21 @@ function AuthDisabledBanner() {
   );
 }
 
+/**
+ * Icon only. A healthy database is the expected state and does not deserve a
+ * permanent sentence in the header; the label lives in the tooltip, and the
+ * colour is what carries the signal when it stops being healthy.
+ */
 function DatabaseBadge({ health }: { health: Health | null }) {
   const up = health?.database === 'up';
+  const label = up ? 'База підключена' : 'База недоступна';
   return (
-    <span className={`flex items-center gap-1.5 ${up ? 'text-slate-500' : 'text-red-600'}`}>
+    <span
+      title={label}
+      aria-label={label}
+      className={up ? 'text-slate-400' : 'text-red-600'}
+    >
       <Database className="size-4" />
-      {up ? 'База підключена' : 'База недоступна'}
     </span>
   );
 }

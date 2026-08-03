@@ -183,14 +183,6 @@ export function ProjectForm({
             />
           </Field>
 
-          <Field label="Статус" hint="Активний проєкт планує й публікує пости.">
-            <Select value={value.status} onChange={(e) => set('status', e.target.value as never)}>
-              <option value="active">Активний</option>
-              <option value="paused">На паузі</option>
-              <option value="archived">В архіві</option>
-            </Select>
-          </Field>
-
           <Field label="Часовий пояс" hint="Усі слоти рахуються в ньому.">
             <Input
               list="tz-list"

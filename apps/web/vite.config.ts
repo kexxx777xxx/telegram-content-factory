@@ -14,6 +14,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Loopback by default; inside a container the dev server has to bind all
+    // interfaces to be reachable through the published port.
+    host: process.env.VITE_HOST === 'true',
     // The API lives on the Express server; same-origin in production, proxied here.
     proxy: {
       '/api': {

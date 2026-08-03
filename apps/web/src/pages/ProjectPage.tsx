@@ -14,7 +14,7 @@ import {
 } from '../components/ProjectForm';
 import { PostsCard } from '../components/PostsCard';
 import { TopicsCard } from '../components/TopicsCard';
-import { Button, Card, Input, Notice } from '../components/ui';
+import { Button, Card, Input, Notice, SegmentedControl } from '../components/ui';
 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -27,6 +27,23 @@ export function ProjectPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [statusSaved, setStatusSaved] = useState(false);
+
+  /**
+   * Applies immediately instead of waiting for "Зберегти".
+   *
+   * Pausing a project is something an operator does *because* something is
+   * wrong; making it wait for a form submit at the bottom of a long page would
+   * be exactly the wrong moment to add a step.
+   */
+  async function applyStatus(status: ProjectFormValue['status']) {
+    if (!id) return;
+    setStatusSaved(false);
+    const updated = await api.updateProject(id, { status });
+    setProject(updated);
+    setStatusSaved(true);
+    setTimeout(() => setStatusSaved(false), 2000);
+  }
 
   useEffect(() => {
     if (isNew || !id) return;
@@ -76,6 +93,33 @@ export function ProjectPage() {
           <ArrowLeft className="size-5" />
         </Link>
         <h1 className="text-xl font-semibold">{isNew ? 'Новий проєкт' : project?.name}</h1>
+
+        {/*
+          Status sits with the title rather than inside the form: it is the one
+          setting that decides whether anything happens at all, and it is the
+          field an operator reaches for most often.
+        */}
+        <div className="ml-auto flex items-center gap-3">
+          <SegmentedControl
+            value={form.status}
+            disabled={saving}
+            onChange={(status) => {
+              setForm({ ...form, status });
+              if (!isNew && id) void applyStatus(status);
+            }}
+            options={[
+              { value: 'active', label: 'Активний', tone: 'green' },
+              { value: 'paused', label: 'Пауза', tone: 'amber' },
+              { value: 'archived', label: 'Архів', tone: 'neutral' },
+            ]}
+          />
+          {statusSaved && (
+            <span className="flex items-center gap-1 text-xs text-emerald-600">
+              <Check className="size-3.5" />
+              застосовано
+            </span>
+          )}
+        </div>
       </div>
 
       {error && (

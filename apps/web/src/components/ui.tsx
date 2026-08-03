@@ -93,6 +93,53 @@ export function Badge({
 }
 
 /**
+ * Segmented control for short, mutually exclusive choices.
+ *
+ * Preferred over a `<select>` when the options are few and the current value
+ * matters at a glance — a dropdown hides two thirds of the state behind a click.
+ */
+export function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: { value: T; label: string; tone?: 'green' | 'amber' | 'neutral' }[];
+  onChange: (next: T) => void;
+  disabled?: boolean;
+}) {
+  const activeStyle = {
+    green: 'bg-emerald-600 text-white',
+    amber: 'bg-amber-500 text-white',
+    neutral: 'bg-slate-900 text-white',
+  };
+
+  return (
+    <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40 ${
+              active
+                ? activeStyle[option.tone ?? 'neutral']
+                : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * Used wherever a setting is legal but has a consequence the operator should
  * know about before choosing it — buffers of 0, auth disabled, and so on.
  */

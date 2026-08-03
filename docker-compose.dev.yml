@@ -1,0 +1,39 @@
+# Development overlay: source is mounted, not baked in.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# The base `app` service is a production image — it COPYs the source and builds
+# it, so every code change needs `docker compose build app`. This overlay
+# replaces that with a bind mount and `tsx watch`, so edits take effect the way
+# they do on the host.
+#
+# The fastest loop is still host-side (`npm run dev`): no container layer at
+# all, and Vite HMR updates the browser without a reload. Use this overlay when
+# you specifically want everything inside Docker.
+services:
+  app:
+    build:
+      context: .
+      target: build
+    command: sh -c "npm run db:migrate -w @tcf/server && npm run dev"
+    environment:
+      NODE_ENV: development
+      # Vite binds loopback by default, which is unreachable from outside the
+      # container even with the port published.
+      VITE_HOST: 'true'
+      # Reachable from the host through the published ports below.
+      ADMIN_BIND_HOST: 0.0.0.0
+      MEDIA_STAGING_DIR: /app/data/media
+    volumes:
+      # Source from the host; node_modules stays the container's own, because
+      # native modules (sharp, argon2, resvg) are built for its platform.
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - ./tsconfig.base.json:/app/tsconfig.base.json
+      - /app/node_modules
+      - /app/apps/server/node_modules
+      - /app/apps/web/node_modules
+      - media_staging:/app/data/media
+    ports:
+      - '127.0.0.1:3000:3000'
+      - '127.0.0.1:5173:5173'
