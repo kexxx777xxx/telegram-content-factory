@@ -1,6 +1,7 @@
 import { env } from '../config.js';
 import { logger } from '../logger.js';
 import { workerPool } from '../queue/worker.js';
+import { startAdminBot, stopAdminBot } from '../telegram/adminBot.js';
 import { planTick } from './planner.js';
 import { ensureJitSlots, publisherTick, reclaimStuckPublishing } from './publisher.js';
 
@@ -45,6 +46,7 @@ export function startScheduler(): void {
   running = true;
 
   workerPool.start();
+  startAdminBot();
 
   // Run once at boot so a restart does not leave a gap the size of the interval.
   void safePlanTick();
@@ -65,5 +67,6 @@ export async function stopScheduler(): Promise<void> {
   running = false;
   if (plannerTimer) clearInterval(plannerTimer);
   if (publisherTimer) clearInterval(publisherTimer);
+  stopAdminBot();
   await workerPool.stop();
 }

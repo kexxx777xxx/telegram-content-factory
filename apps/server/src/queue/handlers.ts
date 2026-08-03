@@ -5,6 +5,7 @@ import { NotPublishableError, publishReadyPost, PublishThrottled } from '../serv
 import { TelegramApiError } from '../telegram/api.js';
 import { getProject } from '../services/projects.js';
 import { replenishTopics } from '../services/topics.js';
+import { sendBackup } from '../services/backup.js';
 import { runPrune } from './prune.js';
 import { PermanentJobFailure, RescheduleJob, type HandlerRegistry, type JobContext } from './types.js';
 
@@ -96,6 +97,11 @@ async function handlePrune({ log }: JobContext): Promise<void> {
   log.info(report, 'prune finished');
 }
 
+async function handleBackup({ log }: JobContext): Promise<void> {
+  const meta = await sendBackup();
+  log.info({ meta }, 'backup finished');
+}
+
 /**
  * Only registered types are ever enqueued (see `IMPLEMENTED_JOB_TYPES`), so a
  * half-built phase cannot fill the queue with jobs nothing can execute.
@@ -106,6 +112,7 @@ export const handlers: HandlerRegistry = {
   generate_and_publish: handleGenerateAndPublish,
   replenish_topics: handleReplenishTopics,
   prune: handlePrune,
+  backup: handleBackup,
 };
 
 export const IMPLEMENTED_JOB_TYPES: ReadonlySet<JobType> = new Set(

@@ -3,6 +3,7 @@ import { env } from '../config.js';
 import { db } from '../db/client.js';
 import { posts, projects } from '../db/schema.js';
 import { logger } from '../logger.js';
+import { alert } from '../services/alerts.js';
 import { enqueue } from '../queue/enqueue.js';
 import { isImplemented } from '../queue/handlers.js';
 
@@ -58,6 +59,13 @@ export async function publisherTick(): Promise<PublisherReport> {
         .where(and(eq(posts.id, post.id), inArray(posts.status, ['planned', 'ready'])));
       skipped++;
       log.warn({ scheduledAt: post.scheduledAt }, 'slot skipped by miss policy');
+      await alert({
+        kind: 'slot_skipped',
+        projectId: project.id,
+        postId: post.id,
+        title: 'Слот пропущено',
+        detail: `Пост не був готовий протягом ${env.PUBLISH_GRACE_MINUTES} хв після ${post.scheduledAt.toISOString()}`,
+      }).catch(() => undefined);
       continue;
     }
 

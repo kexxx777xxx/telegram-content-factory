@@ -57,6 +57,7 @@ export async function planTick(): Promise<PlannerReport> {
     }
 
     jobsEnqueued += await enqueueDailyPrune();
+    jobsEnqueued += await enqueueDailyBackup();
 
     return { projects: active.length, postsPlanned, jobsEnqueued, skipped: false };
   });
@@ -151,6 +152,24 @@ async function enqueueDailyPrune(): Promise<number> {
   if (alreadyToday) return 0;
 
   const enqueued = await enqueue({ type: 'prune', dedupeKey, maxAttempts: 2 });
+  return enqueued ? 1 : 0;
+}
+
+/** Same once-a-day reasoning as prune: the date key covers every status. */
+async function enqueueDailyBackup(): Promise<number> {
+  if (!isImplemented('backup')) return 0;
+
+  const day = new Date().toISOString().slice(0, 10);
+  const dedupeKey = `backup:${day}`;
+
+  const [alreadyToday] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(eq(jobs.dedupeKey, dedupeKey))
+    .limit(1);
+  if (alreadyToday) return 0;
+
+  const enqueued = await enqueue({ type: 'backup', dedupeKey, maxAttempts: 2 });
   return enqueued ? 1 : 0;
 }
 

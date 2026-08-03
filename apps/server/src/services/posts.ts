@@ -6,6 +6,7 @@ import { posts, projects, topics, type Post, type Project } from '../db/schema.j
 import { logger } from '../logger.js';
 import { generateImage } from '../media/pipeline.js';
 import { removeStagedImage } from '../media/staging.js';
+import { sendApprovalCard } from '../telegram/adminBot.js';
 import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
 import { takeNextTopic } from './topics.js';
 
@@ -139,6 +140,15 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
       },
       'post generated',
     );
+
+    // Approval mode is useless if nobody is told a verdict is needed. A failure
+    // to deliver the card must not undo a successful generation, though.
+    if (project.publishMode === 'approval') {
+      await sendApprovalCard(post.id).catch((err: unknown) =>
+        log.warn({ err }, 'could not send approval card'),
+      );
+    }
+
     return 'generated';
   } catch (err) {
     // Back to `planned` so the queue's own retry can pick it up cleanly; the

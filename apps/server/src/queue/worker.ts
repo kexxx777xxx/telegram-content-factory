@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { env } from '../config.js';
 import { logger } from '../logger.js';
+import { alert } from '../services/alerts.js';
 import { claimJob, completeJob, failJob, rescheduleJob } from './claim.js';
 import { handlers } from './handlers.js';
 import { reclaimStuckJobs } from './enqueue.js';
@@ -83,7 +84,15 @@ export class WorkerPool {
       await completeJob(job.id);
       log.info({ durationMs: Date.now() - startedAt, attempt: job.attempts }, 'job done');
     } catch (err) {
-      await this.handleFailure(job.id, job.attempts, err, log, Date.now() - startedAt);
+      await this.handleFailure(
+        job.id,
+        job.attempts,
+        err,
+        log,
+        Date.now() - startedAt,
+        job.type,
+        job.projectId,
+      );
     }
     return true;
   }
@@ -94,6 +103,8 @@ export class WorkerPool {
     err: unknown,
     log: typeof logger,
     durationMs: number,
+    jobType: string,
+    projectId: string | null,
   ): Promise<void> {
     if (err instanceof RescheduleJob) {
       await rescheduleJob(jobId, err.runAfter, err.message);
@@ -110,6 +121,14 @@ export class WorkerPool {
 
     if (outcome === 'dead') {
       log.error({ err, attempts, durationMs }, 'job dead — no further retries');
+      // The operator has to learn about this from somewhere other than the log.
+      await alert({
+        kind: 'job_dead',
+        projectId,
+        title: `Джоба «${jobType}» вичерпала спроби`,
+        detail: message,
+        dedupeKey: `job_dead:${jobType}:${projectId ?? 'global'}`,
+      }).catch(() => undefined);
     } else {
       log.warn({ err, attempts, durationMs }, 'job failed, will retry');
     }

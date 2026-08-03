@@ -7,6 +7,7 @@ import { jobs } from '../../db/schema.js';
 import { logger } from '../../logger.js';
 import { jobCounts, retryJob } from '../../queue/enqueue.js';
 import { planTick } from '../../scheduler/planner.js';
+import { sendBackup } from '../../services/backup.js';
 import { badRequest, firstIssue } from './helpers.js';
 
 export const jobsRouter: Router = Router();
@@ -59,6 +60,18 @@ jobsRouter.post('/jobs/:id/retry', async (req, res) => {
   }
   logger.info({ job_id: params.data.id }, 'job requeued manually');
   res.status(204).end();
+});
+
+/** Runs a backup now and reports where it went. */
+jobsRouter.post('/backup', async (_req, res) => {
+  const meta = await sendBackup();
+  if (!meta) {
+    res.status(409).json({
+      error: 'Адмін-бот не налаштований — бекап нікуди відправляти (ADMIN_BOT_TOKEN / ADMIN_USER_IDS)',
+    });
+    return;
+  }
+  res.json(meta);
 });
 
 /** Forces a planning pass instead of waiting for the tick — useful after edits. */
