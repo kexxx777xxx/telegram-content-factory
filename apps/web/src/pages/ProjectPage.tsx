@@ -72,7 +72,7 @@ export function ProjectPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link to="/" className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+        <Link to="/projects" className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
           <ArrowLeft className="size-5" />
         </Link>
         <h1 className="text-xl font-semibold">{isNew ? 'Новий проєкт' : project?.name}</h1>
@@ -205,7 +205,7 @@ function DangerZone({ project }: { project: ProjectDto }) {
     setBusy(true);
     try {
       await api.deleteProject(project.id);
-      navigate('/', { replace: true });
+      navigate('/projects', { replace: true });
     } finally {
       setBusy(false);
     }

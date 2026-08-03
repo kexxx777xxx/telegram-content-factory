@@ -1,10 +1,11 @@
-import { AlertTriangle, Database, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, Database, LayoutGrid, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import type { Health } from '@tcf/shared';
 import { api, ApiError, type SessionState } from './api/client';
 import { LoginScreen } from './pages/LoginScreen';
 import { ProjectPage } from './pages/ProjectPage';
+import { DashboardPage } from './pages/DashboardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
@@ -56,6 +57,10 @@ export function App() {
               <span className="font-semibold">Telegram Content Factory</span>
             </Link>
             <div className="ml-auto flex items-center gap-4 text-sm text-slate-500">
+              <Link to="/projects" className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100">
+                <LayoutGrid className="size-4" />
+                Проєкти
+              </Link>
               <Link to="/settings" className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100">
                 <SlidersHorizontal className="size-4" />
                 Налаштування
@@ -77,7 +82,8 @@ export function App() {
 
         <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
           <Routes>
-            <Route path="/" element={<ProjectsPage />} />
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/:id" element={<ProjectPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>

@@ -7,7 +7,9 @@ import { jobs } from '../../db/schema.js';
 import { logger } from '../../logger.js';
 import { jobCounts, retryJob } from '../../queue/enqueue.js';
 import { planTick } from '../../scheduler/planner.js';
+import { env } from '../../config.js';
 import { sendBackup } from '../../services/backup.js';
+import { getDashboard } from '../../services/dashboard.js';
 import { badRequest, firstIssue } from './helpers.js';
 
 export const jobsRouter: Router = Router();
@@ -60,6 +62,10 @@ jobsRouter.post('/jobs/:id/retry', async (req, res) => {
   }
   logger.info({ job_id: params.data.id }, 'job requeued manually');
   res.status(204).end();
+});
+
+jobsRouter.get('/dashboard', async (_req, res) => {
+  res.json(await getDashboard(env.PUBLISH_GRACE_MINUTES));
 });
 
 /** Runs a backup now and reports where it went. */

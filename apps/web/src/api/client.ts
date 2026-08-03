@@ -67,6 +67,26 @@ export interface JobDto {
   updatedAt: string;
 }
 
+export interface DashboardData {
+  projects: {
+    id: string; name: string; slug: string; status: string; timezone: string;
+    postsBuffer: number; bufferDepth: number; freshTopics: number; topicsBufferMin: number;
+    nextSlotAt: string | null; lastPublishedAt: string | null;
+    failedPosts: number; skippedPosts: number;
+  }[];
+  queue: Record<string, number>;
+  deadJobs: { id: string; type: string; lastError: string | null; updatedAt: string }[];
+  blocked: { keyLabel: string; model: string; blockedUntil: string }[];
+  spendToday: {
+    keyLabel: string; requests: number; inputTokens: number; outputTokens: number;
+    budget: number | null;
+  }[];
+  slo: {
+    publishedOnTime: number; publishedLate: number; skipped: number;
+    fallbackImages: number; totalImages: number;
+  };
+}
+
 export interface JobsPage {
   counts: Record<string, number>;
   jobs: JobDto[];
@@ -123,6 +143,7 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  dashboard: () => request<DashboardData>('/dashboard'),
   listJobs: () => request<JobsPage>('/jobs'),
   retryJob: (id: string) => request<void>(`/jobs/${id}/retry`, { method: 'POST' }),
   forcePlan: () =>
