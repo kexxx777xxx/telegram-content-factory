@@ -18,8 +18,8 @@
     "db:migrate": "npm run db:migrate -w @tcf/server",
     "db:studio": "npm run db:studio -w @tcf/server",
     "seed:demo": "npm run seed:demo -w @tcf/server",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "npm run test -w @tcf/server",
+    "test:watch": "npm run test:watch -w @tcf/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run typecheck"
   },

@@ -1,0 +1,230 @@
+import { describe, expect, it } from 'vitest';
+import { DateTime } from 'luxon';
+import { sanitizeTelegramHtml, visibleLength } from '../src/telegram/html.js';
+import { sanitizeSvg, SvgInvalidError } from '../src/media/svg/sanitize.js';
+import { fallbackSvg } from '../src/media/svg/fallback.js';
+import { normalizeTopic } from '../src/services/topics.js';
+import { computeSlots, projectJitterSeconds } from '../src/scheduler/slots.js';
+import { buildPermalink } from '../src/telegram/permalink.js';
+import { backoffSeconds } from '../src/queue/claim.js';
+
+/** Everything here is pure — no database, no network. */
+
+describe('Telegram HTML sanitizer', () => {
+  const clean = (input: string) => sanitizeTelegramHtml(input).html;
+
+  it('keeps the allowed tag set', () => {
+    expect(clean('<b>Ж</b> та <i>к</i> і <code>c</code>')).toBe('<b>Ж</b> та <i>к</i> і <code>c</code>');
+  });
+
+  it('does not read prose comparisons as markup', () => {
+    // The regression that matters: `< b ` used to parse as a <b> element and
+    // silently mangled any post containing a comparison operator.
+    expect(clean('if (a < b && c > d) { }')).toBe('if (a &lt; b &amp;&amp; c &gt; d) { }');
+  });
+
+  it('drops script and style contents, not just the tags', () => {
+    expect(clean('До<script>alert(1)</script>Після')).toBe('ДоПісля');
+    expect(clean('A<style>.x{color:red}</style>B')).toBe('AB');
+  });
+
+  it('balances tags Telegram would reject', () => {
+    expect(clean('<b>Забув')).toBe('<b>Забув</b>');
+    expect(clean('Текст</b> далі')).toBe('Текст далі');
+    expect(clean('<b>ж <i>об</b> к</i>')).toBe('<b>ж <i>об</i></b> к');
+  });
+
+  it('allows only http(s) and tg links', () => {
+    expect(clean('<a href="javascript:x">клік</a>')).toBe('клік');
+    expect(clean('<a href="https://e.com">клік</a>')).toBe('<a href="https://e.com">клік</a>');
+  });
+
+  it('reports what it removed so the editor can show it', () => {
+    expect(sanitizeTelegramHtml('<div>x</div>').removedTags).toContain('div');
+  });
+
+  it('counts length the way Telegram does — entities excluded', () => {
+    expect(visibleLength('<b>Привіт</b>, світ!')).toBe('Привіт, світ!'.length);
+  });
+});
+
+describe('SVG sanitizer', () => {
+  const wrap = (inner: string, attrs = 'viewBox="0 0 1200 675"') =>
+    `<svg xmlns="http://www.w3.org/2000/svg" ${attrs}>${inner}</svg>`;
+
+  it('strips executable and external content', () => {
+    const result = sanitizeSvg(wrap('<rect/><script>x</script><image href="http://e/x.png"/>'));
+    expect(result.svg).not.toContain('script');
+    expect(result.svg).not.toContain('<image');
+  });
+
+  it('enforces the no-text rule structurally', () => {
+    const result = sanitizeSvg(wrap('<text x="1" y="1">Ні</text><path d="M0 0"/>'));
+    expect(result.svg).not.toContain('<text');
+    expect(result.removed).toContain('text');
+  });
+
+  it('keeps internal fragment references so gradients survive', () => {
+    const result = sanitizeSvg(wrap('<defs><linearGradient id="g"/></defs><rect fill="url(#g)"/>'));
+    expect(result.svg).toContain('url(#g)');
+  });
+
+  it('rewrites a wrong viewBox instead of rejecting the drawing', () => {
+    const result = sanitizeSvg(wrap('<rect/>', 'viewBox="0 0 800 600"'));
+    expect(result.svg).toContain('viewBox="0 0 1200 675"');
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('rejects DOCTYPE even though the wrapper stripper would hide it', () => {
+    // The check has to run on the raw input: slicing from `<svg` cuts the
+    // DOCTYPE off, which is how every XXE payload used to pass.
+    expect(() =>
+      sanitizeSvg('<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]>' + wrap('<rect/>')),
+    ).toThrow(SvgInvalidError);
+  });
+
+  it('rejects malformed XML that the parser alone would accept', () => {
+    expect(() => sanitizeSvg('<svg viewBox="0 0 1200 675"><rect></svg>')).toThrow(SvgInvalidError);
+  });
+
+  it('unwraps markdown fences and surrounding prose', () => {
+    expect(sanitizeSvg('Ось схема:\n```svg\n' + wrap('<rect/>') + '\n```\nГотово').svg).toMatch(
+      /^<svg/,
+    );
+  });
+});
+
+describe('fallback schematic', () => {
+  it('is deterministic per topic and differs across topics', () => {
+    expect(fallbackSvg('тема А')).toBe(fallbackSvg('тема А'));
+    expect(fallbackSvg('тема А')).not.toBe(fallbackSvg('тема Б'));
+  });
+
+  it('obeys the same no-text rule and survives the sanitizer', () => {
+    const svg = fallbackSvg('Circuit Breaker');
+    expect(svg).not.toMatch(/<text|<tspan/);
+    expect(sanitizeSvg(svg).removed).toHaveLength(0);
+  });
+});
+
+describe('topic normalisation', () => {
+  it('ignores word order and Ukrainian declension', () => {
+    const keys = new Set(
+      [
+        'Circuit Breaker у мікросервісах',
+        'Мікросервіси та Circuit Breaker',
+        'Патерн Circuit Breaker мікросервіси',
+      ].map(normalizeTopic),
+    );
+    expect(keys.size).toBe(1);
+  });
+
+  it('ignores case and punctuation', () => {
+    expect(normalizeTopic('Saga-патерн: чому він не рятує')).toBe(
+      normalizeTopic('SAGA ПАТЕРН, чому він не рятує!'),
+    );
+  });
+
+  it('keeps genuinely different topics apart', () => {
+    expect(normalizeTopic('Ідемпотентність у чергах')).not.toBe(
+      normalizeTopic('Ідемпотентність у базах даних'),
+    );
+  });
+});
+
+describe('slot arithmetic', () => {
+  const tz = 'Europe/Kyiv';
+  const at = (d: Date) => DateTime.fromJSDate(d, { zone: tz }).toFormat('yyyy-LL-dd HH:mm');
+
+  it('produces increasing, unique slots strictly after the cursor', () => {
+    const from = new Date('2026-08-02T10:00:00Z');
+    const slots = computeSlots(
+      { mode: 'slots', slots: ['09:00', '13:00', '18:00'], weekdays: [] },
+      tz,
+      from,
+      10,
+    );
+    expect(slots).toHaveLength(10);
+    expect(slots.every((s) => s > from)).toBe(true);
+    expect(new Set(slots.map((s) => s.getTime())).size).toBe(10);
+    expect(slots.every((s, i) => i === 0 || s > slots[i - 1]!)).toBe(true);
+  });
+
+  it('honours the weekday filter', () => {
+    const slots = computeSlots(
+      { mode: 'slots', slots: ['09:00'], weekdays: [1, 2, 3, 4, 5] },
+      tz,
+      new Date('2026-08-07T12:00:00Z'),
+      3,
+    );
+    // 2026-08-08 is a Saturday, so the next weekday slot is Monday the 10th.
+    expect(at(slots[0]!)).toBe('2026-08-10 09:00');
+  });
+
+  it('moves a slot inside the spring-forward gap to the next real moment', () => {
+    // 2026-03-29: Kyiv jumps 03:00 → 04:00, so 03:30 does not exist that day.
+    const slots = computeSlots(
+      { mode: 'slots', slots: ['03:30'], weekdays: [] },
+      tz,
+      new Date('2026-03-28T12:00:00Z'),
+      2,
+    );
+    expect(at(slots[0]!)).toBe('2026-03-29 04:30');
+    expect(at(slots[1]!)).toBe('2026-03-30 03:30');
+  });
+
+  it('fires the repeated autumn hour once, not twice', () => {
+    // 2026-10-25: the 03:00 hour happens twice in Kyiv.
+    const slots = computeSlots(
+      { mode: 'slots', slots: ['03:30'], weekdays: [] },
+      tz,
+      new Date('2026-10-24T12:00:00Z'),
+      3,
+    );
+    expect(new Set(slots.map((s) => s.getTime())).size).toBe(3);
+    expect(at(slots[0]!)).toBe('2026-10-25 03:30');
+  });
+
+  it('walks interval schedules forward from the anchor', () => {
+    const slots = computeSlots(
+      { mode: 'interval', intervalMinutes: 360, anchor: '10:00' },
+      tz,
+      new Date('2026-08-02T11:30:00Z'),
+      2,
+    );
+    expect(at(slots[0]!)).toBe('2026-08-02 16:00');
+    expect(at(slots[1]!)).toBe('2026-08-02 22:00');
+  });
+
+  it('derives a stable per-project offset', () => {
+    const id = 'f2548fc8-e10d-4d51-b92a-8810c606da29';
+    // Randomness here would break planner idempotency: every tick would compute
+    // a different run_after for the same slot.
+    expect(projectJitterSeconds(id)).toBe(projectJitterSeconds(id));
+    expect(projectJitterSeconds(id)).not.toBe(projectJitterSeconds('other-id'));
+  });
+});
+
+describe('permalinks', () => {
+  it('prefers the public form', () => {
+    expect(buildPermalink('@sysarch_ua', null, 42)).toBe('https://t.me/sysarch_ua/42');
+    expect(buildPermalink('-1001234567890', 'my_channel', 7)).toBe('https://t.me/my_channel/7');
+  });
+
+  it('falls back to the private form', () => {
+    expect(buildPermalink('-1001234567890', null, 15)).toBe('https://t.me/c/1234567890/15');
+  });
+
+  it('returns null rather than inventing a link', () => {
+    expect(buildPermalink('12345', null, 1)).toBeNull();
+  });
+});
+
+describe('retry backoff', () => {
+  it('grows exponentially and stops at half an hour', () => {
+    expect(backoffSeconds(1)).toBe(30);
+    expect(backoffSeconds(2)).toBe(60);
+    expect(backoffSeconds(3)).toBe(120);
+    expect(backoffSeconds(20)).toBe(1800);
+  });
+});
