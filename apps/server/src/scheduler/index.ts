@@ -2,6 +2,7 @@ import { env } from '../config.js';
 import { logger } from '../logger.js';
 import { workerPool } from '../queue/worker.js';
 import { planTick } from './planner.js';
+import { ensureJitSlots, publisherTick, reclaimStuckPublishing } from './publisher.js';
 
 /**
  * Owns the periodic loops. Kept separate from the HTTP layer so a deployment
@@ -9,7 +10,11 @@ import { planTick } from './planner.js';
  */
 
 let plannerTimer: NodeJS.Timeout | undefined;
+let publisherTimer: NodeJS.Timeout | undefined;
 let running = false;
+
+/** A send cannot plausibly take this long; anything older lost its worker. */
+const STUCK_PUBLISHING_MS = 10 * 60_000;
 
 async function safePlanTick(): Promise<void> {
   try {
@@ -19,6 +24,19 @@ async function safePlanTick(): Promise<void> {
     }
   } catch (err) {
     logger.error({ err }, 'planner tick failed');
+  }
+}
+
+async function safePublisherTick(): Promise<void> {
+  try {
+    await reclaimStuckPublishing(STUCK_PUBLISHING_MS);
+    await ensureJitSlots();
+    const report = await publisherTick();
+    if (report.queued > 0 || report.skipped > 0 || report.jit > 0) {
+      logger.info(report, 'publisher tick');
+    }
+  } catch (err) {
+    logger.error({ err }, 'publisher tick failed');
   }
 }
 
@@ -33,11 +51,19 @@ export function startScheduler(): void {
   plannerTimer = setInterval(() => void safePlanTick(), env.PLANNER_TICK_SECONDS * 1000);
   plannerTimer.unref();
 
-  logger.info({ everySeconds: env.PLANNER_TICK_SECONDS }, 'planner started');
+  void safePublisherTick();
+  publisherTimer = setInterval(() => void safePublisherTick(), env.PUBLISHER_TICK_SECONDS * 1000);
+  publisherTimer.unref();
+
+  logger.info(
+    { plannerSeconds: env.PLANNER_TICK_SECONDS, publisherSeconds: env.PUBLISHER_TICK_SECONDS },
+    'scheduler started',
+  );
 }
 
 export async function stopScheduler(): Promise<void> {
   running = false;
   if (plannerTimer) clearInterval(plannerTimer);
+  if (publisherTimer) clearInterval(publisherTimer);
   await workerPool.stop();
 }

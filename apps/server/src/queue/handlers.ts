@@ -1,6 +1,8 @@
 import { JOB_TYPES, type JobType } from '@tcf/shared';
 import { ChainExhaustedError, ChainMissingError } from '../ai/chain.js';
 import { generatePostText, PostNotFoundError } from '../services/posts.js';
+import { NotPublishableError, publishReadyPost, PublishThrottled } from '../services/publish.js';
+import { TelegramApiError } from '../telegram/api.js';
 import { getProject } from '../services/projects.js';
 import { replenishTopics } from '../services/topics.js';
 import { runPrune } from './prune.js';
@@ -46,6 +48,49 @@ async function handleGeneratePost({ job, log }: JobContext): Promise<void> {
   }
 }
 
+async function handlePublishPost({ job, log }: JobContext): Promise<void> {
+  const postId = (job.payload as { postId?: unknown }).postId;
+  if (typeof postId !== 'string') throw new PermanentJobFailure('publish_post без postId');
+
+  try {
+    const outcome = await publishReadyPost(postId);
+    log.info({ postId, outcome }, 'publish finished');
+  } catch (err) {
+    if (err instanceof PublishThrottled) {
+      // Telegram's own back-pressure. Waiting is the correct response, and it
+      // must not cost the post one of its retries.
+      throw new RescheduleJob(
+        new Date(Date.now() + err.retryAfterSeconds * 1000 + 1000),
+        err.message,
+      );
+    }
+    if (err instanceof PostNotFoundError || err instanceof NotPublishableError) {
+      throw new PermanentJobFailure(err.message);
+    }
+    // A rejected token is not going to start working on the fourth attempt.
+    // Dying immediately with the reason is more useful than half an hour of
+    // backoff hiding it.
+    if (err instanceof TelegramApiError && err.isAuthFailure) {
+      throw new PermanentJobFailure(`${err.message} — перевірте токен бота проєкту`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * The just-in-time path: one job that generates and immediately publishes.
+ *
+ * Kept as a single job rather than two chained ones so a slot cannot end up
+ * with a freshly generated post that nothing publishes.
+ */
+async function handleGenerateAndPublish(ctx: JobContext): Promise<void> {
+  const postId = (ctx.job.payload as { postId?: unknown }).postId;
+  if (typeof postId !== 'string') throw new PermanentJobFailure('generate_and_publish без postId');
+
+  await handleGeneratePost(ctx);
+  await handlePublishPost(ctx);
+}
+
 async function handlePrune({ log }: JobContext): Promise<void> {
   const report = await runPrune();
   log.info(report, 'prune finished');
@@ -57,6 +102,8 @@ async function handlePrune({ log }: JobContext): Promise<void> {
  */
 export const handlers: HandlerRegistry = {
   generate_post: handleGeneratePost,
+  publish_post: handlePublishPost,
+  generate_and_publish: handleGenerateAndPublish,
   replenish_topics: handleReplenishTopics,
   prune: handlePrune,
 };

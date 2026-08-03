@@ -60,46 +60,76 @@ export type Schedule = z.infer<typeof scheduleSchema>;
 
 const defaultSchedule: Schedule = { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] };
 
-export const projectInputSchema = z.object({
+/**
+ * Field definitions **without** defaults.
+ *
+ * Kept separate because `.partial()` does not strip `.default()`: a PATCH body
+ * carrying one field would otherwise parse into every field, silently resetting
+ * the channel's persona, schedule and buffers to their defaults. Defaults belong
+ * to creation only, so they are applied in `projectInputSchema` and nowhere else.
+ */
+const projectFields = {
   name: z.string().min(1).max(120),
   slug: z
     .string()
     .min(2)
     .max(64)
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Лише малі літери, цифри та дефіси'),
-  status: z.enum(PROJECT_STATUSES).default('paused'),
-  timezone: timezoneSchema.default('Europe/Kyiv'),
-  language: z.string().min(2).max(16).default('uk'),
+  status: z.enum(PROJECT_STATUSES),
+  timezone: timezoneSchema,
+  language: z.string().min(2).max(16),
   /** Free-form author voice injected into every text prompt. */
-  persona: z.string().max(4000).default(''),
-  hashtags: z.array(z.string().max(64)).max(20).default([]),
+  persona: z.string().max(4000),
+  hashtags: z.array(z.string().max(64)).max(20),
 
   telegramChannelId: telegramChannelSchema,
-  telegramBotToken: z.string().min(20).optional(),
-  adminChatId: z.string().optional().nullable(),
+  adminChatId: z.string().nullable(),
 
-  imageMode: z.enum(IMAGE_MODES).default('svg'),
-  publishMode: z.enum(PUBLISH_MODES).default('auto'),
+  imageMode: z.enum(IMAGE_MODES),
+  publishMode: z.enum(PUBLISH_MODES),
 
   /**
    * 0 is deliberate and supported: no pre-generation, the post is produced at
    * publish time (JIT). Any value ≥ 1 keeps that many slots generated ahead.
    */
-  postsBuffer: z.number().int().min(0).max(50).default(3),
+  postsBuffer: z.number().int().min(0).max(50),
   /** 0 = no topic bank; a topic is requested from the model just in time. */
-  topicsBufferMin: z.number().int().min(0).max(500).default(10),
+  topicsBufferMin: z.number().int().min(0).max(500),
   /** How long before a slot generation starts. Ignored when postsBuffer = 0. */
-  leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60).default(180),
-  missPolicy: z.enum(MISS_POLICIES).default('publish_late'),
+  leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60),
+  missPolicy: z.enum(MISS_POLICIES),
 
-  schedule: scheduleSchema.default(defaultSchedule),
+  schedule: scheduleSchema,
+} as const;
+
+export const projectInputSchema = z.object({
+  ...projectFields,
+  status: projectFields.status.default('paused'),
+  timezone: projectFields.timezone.default('Europe/Kyiv'),
+  language: projectFields.language.default('uk'),
+  persona: projectFields.persona.default(''),
+  hashtags: projectFields.hashtags.default([]),
+  telegramBotToken: z.string().min(20).optional(),
+  adminChatId: projectFields.adminChatId.optional(),
+  imageMode: projectFields.imageMode.default('svg'),
+  publishMode: projectFields.publishMode.default('auto'),
+  postsBuffer: projectFields.postsBuffer.default(3),
+  topicsBufferMin: projectFields.topicsBufferMin.default(10),
+  leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
+  missPolicy: projectFields.missPolicy.default('publish_late'),
+  schedule: projectFields.schedule.default(defaultSchedule),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
-/** Slug is immutable after creation: it appears in logs, jobs and dedupe keys. */
-export const projectUpdateSchema = projectInputSchema
-  .partial()
+/**
+ * Slug is immutable after creation: it appears in logs, jobs and dedupe keys.
+ * Every other field is optional and carries no default, so an absent key means
+ * "leave it alone" rather than "reset it".
+ */
+export const projectUpdateSchema = z
+  .object(projectFields)
   .omit({ slug: true })
+  .partial()
   .extend({
     /**
      * An empty string means "keep the stored token". The edit form never
@@ -204,9 +234,16 @@ export const apiKeyInputSchema = z.object({
 });
 export type ApiKeyInput = z.infer<typeof apiKeyInputSchema>;
 
-export const apiKeyUpdateSchema = apiKeyInputSchema
+/** Same reasoning as projectUpdateSchema: no defaults on a partial update. */
+export const apiKeyUpdateSchema = z
+  .object({
+    provider: z.enum(AI_PROVIDERS),
+    label: z.string().min(1).max(120),
+    enabled: z.boolean(),
+    rpmLimit: z.number().int().min(1).max(10_000).nullable(),
+    dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable(),
+  })
   .partial()
-  .omit({ scope: true, projectId: true })
   .extend({ secret: z.union([z.literal(''), z.string().min(10)]).optional() });
 export type ApiKeyUpdate = z.infer<typeof apiKeyUpdateSchema>;
 
