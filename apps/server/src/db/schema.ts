@@ -187,6 +187,17 @@ export const modelChainSteps = pgTable(
     params: jsonb('params').notNull().default(sql`'{}'::jsonb`),
     promptId: uuid('prompt_id').references(() => prompts.id, { onDelete: 'set null' }),
     keyPreference: keyPreferenceEnum('key_preference').notNull().default('project_then_global'),
+    /**
+     * Pins this step to one specific key, overriding `keyPreference`.
+     *
+     * The case this exists for: a paid key that should pay for images only,
+     * while text keeps running on the free one. Scope alone cannot express
+     * that — both keys are global, and the difference is what they are *for*.
+     * On delete the pin clears and the step falls back to preference order,
+     * which is the safe direction: work continues on a cheaper key rather than
+     * stopping.
+     */
+    apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
   },
   (t) => [uniqueIndex('model_chain_steps_position_uniq').on(t.chainId, t.position)],
 );

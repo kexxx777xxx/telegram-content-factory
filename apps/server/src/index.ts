@@ -31,6 +31,13 @@ async function main() {
   startScheduler();
 
   const app = createApp();
+
+  /*
+   * A taken port is worth naming out loud. The usual cause is a container from
+   * `docker compose up` still holding it, and the symptom otherwise is silent:
+   * requests keep succeeding, served by the old process, while edits appear to
+   * have no effect.
+   */
   const server = app.listen(env.PORT, env.ADMIN_BIND_HOST, () => {
     logger.info(
       { host: env.ADMIN_BIND_HOST, port: env.PORT, authEnabled: env.ADMIN_AUTH_ENABLED },
@@ -50,6 +57,19 @@ async function main() {
     // Do not let a hung connection keep the process alive forever.
     setTimeout(() => process.exit(1), 10_000).unref();
   };
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error(
+        `Порт ${env.PORT} уже зайнятий. Найчастіше це контейнер із «docker compose up» — ` +
+          'зупиніть його (`docker compose stop app`) або змініть PORT. ' +
+          'Інакше запити йтимуть у старий процес, і правки не діятимуть.',
+      );
+    } else {
+      logger.error({ err }, 'HTTP server failed to start');
+    }
+    process.exit(1);
+  });
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

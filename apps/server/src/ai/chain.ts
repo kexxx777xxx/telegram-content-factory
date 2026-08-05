@@ -102,7 +102,12 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
 
     const prompt = await resolvePrompt(options.action, options.projectId, step.model, step.promptId);
     const rendered = renderPrompt(prompt.body, options.variables);
-    const keys = await resolveKeys(options.projectId, step.provider, step.keyPreference);
+    const keys = await resolveKeys(
+      options.projectId,
+      step.provider,
+      step.keyPreference,
+      step.apiKeyId,
+    );
 
     if (keys.length === 0) {
       attempts.push({
@@ -111,7 +116,9 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
         keyLabel: '—',
         keyScope: 'global',
         outcome: 'skipped',
-        detail: 'Немає доступного API-ключа для цього кроку',
+        detail: step.apiKeyId
+          ? 'Прикріплений до кроку ключ вимкнений або видалений'
+          : 'Немає доступного API-ключа для цього кроку',
       });
       continue;
     }
@@ -236,6 +243,7 @@ function syntheticStep(model: string, template: ChainStep | undefined): ChainSte
     params: template?.params ?? {},
     promptId: null,
     keyPreference: template?.keyPreference ?? 'project_then_global',
+    apiKeyId: template?.apiKeyId ?? null,
   };
 }
 

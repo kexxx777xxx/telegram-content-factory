@@ -289,6 +289,13 @@ export const chainStepInputSchema = z.object({
     .default({}),
   promptId: z.string().uuid().nullable().default(null),
   keyPreference: z.enum(KEY_PREFERENCES).default('project_then_global'),
+  /**
+   * Pins the step to one key, overriding `keyPreference`.
+   *
+   * Exists for the "paid key pays for images only" case: both keys can be
+   * global, so scope cannot tell them apart — what differs is what each is for.
+   */
+  apiKeyId: z.string().uuid().nullable().default(null),
 });
 export type ChainStepInput = z.infer<typeof chainStepInputSchema>;
 

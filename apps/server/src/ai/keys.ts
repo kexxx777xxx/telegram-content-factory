@@ -25,7 +25,26 @@ export async function resolveKeys(
   projectId: string | null,
   provider: AiProvider,
   preference: KeyPreference,
+  pinnedKeyId?: string | null,
 ): Promise<ResolvedKey[]> {
+  /*
+   * A pinned key wins outright, with no fallback to the others.
+   *
+   * That is the point: pinning a paid key to image generation means images
+   * must be paid for, not "paid for unless something else is cheaper". If the
+   * pinned key is unavailable the step is skipped and the *next chain step*
+   * decides — which is where an alternative belongs.
+   */
+  if (pinnedKeyId) {
+    const [row] = await db
+      .select()
+      .from(apiKeys)
+      .where(and(eq(apiKeys.id, pinnedKeyId), eq(apiKeys.enabled, true)))
+      .limit(1);
+    if (!row || row.provider !== provider) return [];
+    return [toResolved(row, row.scope)];
+  }
+
   const wantProject = preference !== 'global_only' && projectId !== null;
   const wantGlobal = preference !== 'project_only';
 

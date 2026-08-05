@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { encryptSecret } from '../src/crypto/secrets.js';
 import { closeDatabase, db } from '../src/db/client.js';
+import { assertTestDatabase } from './guard.js';
 import { apiKeys, jobs, posts, projects, topics } from '../src/db/schema.js';
 import { providers } from '../src/ai/gemini.js';
 import { LlmError, type LlmProvider } from '../src/ai/provider.js';
@@ -67,6 +68,7 @@ const fake = new FakeProvider();
 const realGemini = providers.gemini!;
 
 async function reset(): Promise<void> {
+  assertTestDatabase();
   await db.execute(
     sql`truncate ${jobs}, ${posts}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
   );

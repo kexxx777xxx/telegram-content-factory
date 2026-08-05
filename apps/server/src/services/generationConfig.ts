@@ -54,6 +54,7 @@ export async function getGenerationConfig(projectId: string | null): Promise<Act
         params: step.params,
         promptId: step.promptId,
         keyPreference: step.keyPreference,
+        apiKeyId: step.apiKeyId,
       })),
       chainInherited: projectId !== null && ownChain.length === 0,
       prompt: { body: prompt.body, version: prompt.version, scope: prompt.scope },
@@ -98,6 +99,7 @@ async function resolveChainById(chainId: string, action: AiAction) {
         params: (step.params ?? {}) as ChainStepInput['params'],
         promptId: step.promptId,
         keyPreference: step.keyPreference,
+        apiKeyId: step.apiKeyId,
       })),
   };
 }
@@ -117,6 +119,7 @@ export async function saveActionConfig(
         params: step.params,
         promptId: step.promptId,
         keyPreference: step.keyPreference,
+        apiKeyId: step.apiKeyId,
       })),
     );
   }

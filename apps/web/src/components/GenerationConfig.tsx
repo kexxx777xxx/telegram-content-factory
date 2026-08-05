@@ -1,4 +1,11 @@
-import type { ActionConfig, AiAction, ChainStepInput, DryRunResult, ModelInfo } from '@tcf/shared';
+import type {
+  ActionConfig,
+  AiAction,
+  ApiKeyDto,
+  ChainStepInput,
+  DryRunResult,
+  ModelInfo,
+} from '@tcf/shared';
 import {
   ArrowDown,
   ArrowUp,
@@ -43,6 +50,7 @@ const VARIABLES: Record<AiAction, string[]> = {
 export function GenerationConfig({ projectId }: { projectId?: string }) {
   const [configs, setConfigs] = useState<ActionConfig[] | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [keys, setKeys] = useState<ApiKeyDto[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [open, setOpen] = useState<AiAction | null>(null);
 
@@ -54,6 +62,7 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
       .catch((err: unknown) =>
         setModelsError(err instanceof Error ? err.message : 'Каталог моделей недоступний'),
       );
+    void api.listKeys().then(setKeys);
   }, [projectId]);
 
   if (!configs) {
@@ -83,6 +92,7 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
             key={config.action}
             config={config}
             models={models}
+            keys={keys}
             projectId={projectId}
             expanded={open === config.action}
             onToggle={() => setOpen(open === config.action ? null : config.action)}
@@ -97,6 +107,7 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
 function ActionRow({
   config,
   models,
+  keys,
   projectId,
   expanded,
   onToggle,
@@ -104,6 +115,7 @@ function ActionRow({
 }: {
   config: ActionConfig;
   models: ModelInfo[];
+  keys: ApiKeyDto[];
   projectId?: string;
   expanded: boolean;
   onToggle: () => void;
@@ -222,6 +234,8 @@ function ActionRow({
                   index={index}
                   total={steps.length}
                   models={models}
+                  keys={keys}
+                  action={config.action}
                   onChange={(next) => setSteps(steps.map((s, i) => (i === index ? next : s)))}
                   onMove={(delta) => {
                     const target = index + delta;
@@ -241,10 +255,11 @@ function ActionRow({
                     ...steps,
                     {
                       provider: 'gemini',
-                      model: models[0]?.id ?? '',
+                      model: modelsForAction(models, config.action)[0]?.id ?? '',
                       params: {},
                       promptId: null,
                       keyPreference: 'project_then_global',
+                      apiKeyId: null,
                     },
                   ])
                 }
@@ -320,11 +335,23 @@ function ActionRow({
   );
 }
 
+/**
+ * Only models that can do the job.
+ *
+ * The `image` action needs a drawing model; showing the text models there is
+ * how you end up configuring a chain that cannot possibly work.
+ */
+function modelsForAction(models: ModelInfo[], action: AiAction): ModelInfo[] {
+  return action === 'image' ? models.filter((m) => m.supportsImage) : models;
+}
+
 function StepRow({
   step,
   index,
   total,
   models,
+  keys,
+  action,
   onChange,
   onMove,
   onRemove,
@@ -333,13 +360,16 @@ function StepRow({
   index: number;
   total: number;
   models: ModelInfo[];
+  keys: ApiKeyDto[];
+  action: AiAction;
   onChange: (next: ChainStepInput) => void;
   onMove: (delta: number) => void;
   onRemove: () => void;
 }) {
+  const usable = modelsForAction(models, action);
   // The configured model may no longer be in the catalog — keep it selectable
   // rather than silently switching the operator to a different model.
-  const known = models.some((m) => m.id === step.model);
+  const known = usable.some((m) => m.id === step.model);
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
@@ -347,22 +377,41 @@ function StepRow({
 
       <Select
         value={step.model}
-        className="w-auto min-w-56 flex-1"
+        className="w-auto min-w-64 flex-1"
         onChange={(e) => onChange({ ...step, model: e.target.value })}
       >
         {!known && step.model && (
           <option value={step.model}>{step.model} (немає в каталозі)</option>
         )}
-        {models.map((m) => (
+        {usable.map((m) => (
           <option key={m.id} value={m.id}>
-            {m.id}
+            {/* The human name matters: "Nano Banana" is gemini-2.5-flash-image,
+                and nobody finds it by id alone. */}
+            {m.displayName && m.displayName !== m.id ? `${m.displayName} — ${m.id}` : m.id}
           </option>
         ))}
       </Select>
 
       <Select
+        value={step.apiKeyId ?? ''}
+        className="w-auto"
+        title="Прикріпити крок до конкретного ключа"
+        onChange={(e) => onChange({ ...step, apiKeyId: e.target.value || null })}
+      >
+        <option value="">ключ: за областю</option>
+        {keys
+          .filter((k) => k.enabled)
+          .map((k) => (
+            <option key={k.id} value={k.id}>
+              ключ: {k.label}
+            </option>
+          ))}
+      </Select>
+
+      <Select
         value={step.keyPreference}
         className="w-auto"
+        disabled={step.apiKeyId !== null}
         onChange={(e) => onChange({ ...step, keyPreference: e.target.value as never })}
       >
         <option value="project_then_global">ключ проєкту → глобальний</option>

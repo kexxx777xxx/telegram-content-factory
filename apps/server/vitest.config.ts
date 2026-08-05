@@ -8,8 +8,17 @@ import { defineConfig } from 'vitest/config';
  * mocked driver would assert that the mock behaves as written rather than that
  * Postgres does, which is precisely the thing worth checking.
  */
+const TEST_DATABASE_URL =
+  process.env.TEST_DATABASE_URL ?? 'postgres://tcf:tcf@localhost:5432/tcf_test';
+
 export default defineConfig({
   test: {
+    /*
+     * Set here rather than only in globalSetup: worker processes do not inherit
+     * env mutations made there, and a worker that fell back to the development
+     * database would be truncated by the first `reset()`.
+     */
+    env: { DATABASE_URL: TEST_DATABASE_URL, NODE_ENV: 'test' },
     globals: false,
     environment: 'node',
     include: ['test/**/*.test.ts'],

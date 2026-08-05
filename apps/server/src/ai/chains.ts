@@ -12,6 +12,8 @@ export interface ChainStep {
   params: { temperature?: number; maxOutputTokens?: number; thinkingBudget?: number };
   promptId: string | null;
   keyPreference: KeyPreference;
+  /** Overrides `keyPreference` with one exact key. */
+  apiKeyId: string | null;
 }
 
 export interface ResolvedChain {
@@ -79,6 +81,7 @@ async function loadChain(where: ReturnType<typeof and>): Promise<ResolvedChain |
       params: (step.params ?? {}) as ChainStep['params'],
       promptId: step.promptId,
       keyPreference: step.keyPreference,
+      apiKeyId: step.apiKeyId,
     })),
   };
 }
@@ -108,6 +111,7 @@ export async function ensureDefaultChains(): Promise<void> {
         params: {},
         promptId: null,
         keyPreference: 'project_then_global' as const,
+        apiKeyId: null,
       })),
     );
 
@@ -160,6 +164,7 @@ export async function saveChain(
           params: step.params,
           promptId: step.promptId,
           keyPreference: step.keyPreference,
+          apiKeyId: step.apiKeyId,
         })),
       );
     }
@@ -196,6 +201,7 @@ async function loadChainTx(
       params: (step.params ?? {}) as ChainStep['params'],
       promptId: step.promptId,
       keyPreference: step.keyPreference,
+      apiKeyId: step.apiKeyId,
     })),
   };
 }

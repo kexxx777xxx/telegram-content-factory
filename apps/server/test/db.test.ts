@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, db } from '../src/db/client.js';
+import { assertTestDatabase } from './guard.js';
 import {
   apiKeys,
   jobs,
@@ -24,6 +25,7 @@ import { insertTopics, needsReplenish, topicCounts } from '../src/services/topic
  */
 
 async function reset(): Promise<void> {
+  assertTestDatabase();
   await db.execute(
     sql`truncate ${jobs}, ${posts}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
   );

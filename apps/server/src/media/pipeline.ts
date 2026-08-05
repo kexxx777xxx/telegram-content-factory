@@ -165,7 +165,7 @@ async function generateWithImageModel(
     const provider = providers[step.provider];
     if (!provider?.generateImage) continue;
 
-    const keys = await resolveKeys(project.id, step.provider, step.keyPreference);
+    const keys = await resolveKeys(project.id, step.provider, step.keyPreference, step.apiKeyId);
     for (const key of keys) {
       const gate = await acquire(key.id, step.model, {
         rpmLimit: key.rpmLimit,
