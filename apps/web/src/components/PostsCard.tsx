@@ -7,9 +7,10 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Send,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../api/client';
+import { api, type LaunchResult } from '../api/client';
 import { Badge, Button, Card, Notice, Textarea } from './ui';
 
 const STATUS_LABEL: Record<string, { text: string; tone: 'neutral' | 'green' | 'amber' | 'red' }> = {
@@ -60,10 +61,18 @@ export function PostsCard({ project }: { project: ProjectDto }) {
                 <strong>{count}</strong>
               </span>
             ))}
-          <Button variant="secondary" className="ml-auto" onClick={() => void reload()}>
-            <RefreshCw className="size-4" />
-            Оновити
-          </Button>
+          <span className="ml-auto flex items-center gap-2">
+            <LaunchButton
+              label="Опублікувати зараз"
+              confirm={`Опублікувати найближчий пост проєкту «${project.name}» просто зараз, не чекаючи слоту?`}
+              run={() => api.publishProjectNow(project.id)}
+              onDone={() => void reload()}
+            />
+            <Button variant="secondary" onClick={() => void reload()}>
+              <RefreshCw className="size-4" />
+              Оновити
+            </Button>
+          </span>
         </div>
 
         {!page ? (
@@ -246,6 +255,17 @@ function PostRow({
                   Збережено
                 </span>
               )}
+              <LaunchButton
+                label={post.textHtml === null ? 'Згенерувати і опублікувати' : 'Опублікувати зараз'}
+                confirm={
+                  post.textHtml === null
+                    ? 'Пост ще не готовий. Згенерувати його зараз і одразу опублікувати?'
+                    : 'Опублікувати цей пост зараз, не чекаючи слоту?'
+                }
+                disabled={busy}
+                run={() => api.publishPostNow(post.id)}
+                onDone={onChanged}
+              />
               <Button variant="secondary" onClick={() => void regenerate(true)} disabled={busy}>
                 <RotateCcw className="size-4" />
                 Перегенерувати
@@ -258,5 +278,58 @@ function PostRow({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The manual launch. Confirmation is not ceremony: this writes to a live
+ * channel, and unlike everything else on this card it cannot be undone.
+ */
+function LaunchButton({
+  label,
+  confirm,
+  disabled,
+  run,
+  onDone,
+}: {
+  label: string;
+  confirm: string;
+  disabled?: boolean;
+  run: () => Promise<LaunchResult>;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function click() {
+    if (!window.confirm(confirm)) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const launched = await run();
+      setResult(
+        launched.job === 'publish_post'
+          ? 'У черзі на публікацію'
+          : 'Генерується і одразу піде в канал',
+      );
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не вдалося запустити');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Button variant="secondary" onClick={() => void click()} disabled={busy || disabled}>
+        {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+        {label}
+      </Button>
+      {result && <span className="text-sm text-emerald-600">{result}</span>}
+      {error && <span className="text-sm text-red-600">{error}</span>}
+    </>
   );
 }

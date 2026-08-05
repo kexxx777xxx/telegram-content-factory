@@ -92,6 +92,12 @@ export interface JobsPage {
   jobs: JobDto[];
 }
 
+export interface LaunchResult {
+  postId: string;
+  job: 'publish_post' | 'generate_and_publish';
+  created: boolean;
+}
+
 export const api = {
   health: () => request<Health>('/health'),
   session: () => request<SessionState>('/session'),
@@ -155,6 +161,10 @@ export const api = {
   listPosts: (projectId: string) => request<PostsPage>(`/projects/${projectId}/posts`),
   updatePost: (postId: string, textHtml: string) =>
     request<unknown>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify({ textHtml }) }),
+  publishPostNow: (postId: string) =>
+    request<LaunchResult>(`/posts/${postId}/publish`, { method: 'POST' }),
+  publishProjectNow: (projectId: string) =>
+    request<LaunchResult>(`/projects/${projectId}/publish-now`, { method: 'POST' }),
   regeneratePost: (postId: string, keepTopic: boolean) =>
     request<unknown>(`/posts/${postId}/regenerate`, {
       method: 'POST',

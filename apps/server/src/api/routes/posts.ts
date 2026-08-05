@@ -15,6 +15,7 @@ import {
   updatePostText,
   type GenerationMeta,
 } from '../../services/posts.js';
+import { launchPost, NotLaunchableError } from '../../services/publishNow.js';
 import { badRequest, firstIssue } from './helpers.js';
 
 export const postsRouter: Router = Router();
@@ -127,25 +128,26 @@ postsRouter.patch('/posts/:postId', async (req, res) => {
  * `keepTopic` defaults to true: regenerating usually means "same topic, better
  * text", and releasing the topic every time would churn the bank.
  */
-/** Publishes now, ignoring the slot. Used for approvals and manual pushes. */
+/**
+ * Runs the slot now, ignoring its time.
+ *
+ * Works from any unfinished state: a ready post is published, an unfinished one
+ * is generated and published in one job. The response says which path was
+ * taken so the UI does not have to re-derive it from the status it just saw.
+ */
 postsRouter.post('/posts/:postId/publish', async (req, res) => {
   const params = postParam.safeParse(req.params);
   if (!params.success) return badRequest(res, firstIssue(params.error));
 
   try {
-    const post = await getPost(params.data.postId);
-    await enqueue({
-      type: 'publish_post',
-      projectId: post.projectId,
-      payload: { postId: post.id },
-      priority: 50,
-      dedupeKey: `post:${post.id}:publish`,
-    });
-    logger.info({ post_id: post.id }, 'manual publish queued');
-    res.status(202).json({ queued: true });
+    res.status(202).json(await launchPost(params.data.postId));
   } catch (err) {
     if (err instanceof PostNotFoundError) {
       res.status(404).json({ error: err.message });
+      return;
+    }
+    if (err instanceof NotLaunchableError) {
+      res.status(409).json({ error: err.message });
       return;
     }
     throw err;

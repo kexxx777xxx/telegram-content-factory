@@ -17,6 +17,7 @@ import { claimJob, completeJob, failJob, rescheduleJob } from '../src/queue/clai
 import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
+import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
 
@@ -216,6 +217,96 @@ describe('rate limiting', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.retryAt.getTime()).toBe(until.getTime());
+  });
+});
+
+describe('manual launch', () => {
+  async function makePost(
+    projectId: string,
+    overrides: Partial<typeof posts.$inferInsert> = {},
+  ): Promise<string> {
+    const [row] = await db
+      .insert(posts)
+      .values({
+        projectId,
+        scheduledAt: new Date(Date.now() + 3 * 3600_000),
+        status: 'planned',
+        ...overrides,
+      })
+      .returning({ id: posts.id });
+    return row!.id;
+  }
+
+  it('publishes a ready post directly', async () => {
+    const project = await makeProject();
+    const postId = await makePost(project.id, { status: 'ready', textHtml: '<b>готово</b>' });
+
+    const result = await launchPost(postId);
+    expect(result.job).toBe('publish_post');
+
+    const [job] = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(job?.type).toBe('publish_post');
+  });
+
+  it('generates and publishes in one job when the post is not ready', async () => {
+    const project = await makeProject();
+    const postId = await makePost(project.id);
+
+    const result = await launchPost(postId);
+    expect(result.job).toBe('generate_and_publish');
+  });
+
+  it('drops the pending buffer job so the two cannot race', async () => {
+    const project = await makeProject();
+    const postId = await makePost(project.id);
+    await enqueue({
+      type: 'generate_post',
+      projectId: project.id,
+      payload: { postId },
+      dedupeKey: `post:${postId}:generate`,
+    });
+
+    await launchPost(postId);
+
+    const rows = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(rows.map((r) => r.type)).toEqual(['generate_and_publish']);
+  });
+
+  it('refuses a post that is already published or in flight', async () => {
+    const project = await makeProject();
+    const published = await makePost(project.id, { status: 'published' });
+    const running = await makePost(project.id, {
+      status: 'generating',
+      scheduledAt: new Date(Date.now() + 7 * 3600_000),
+    });
+
+    await expect(launchPost(published)).rejects.toBeInstanceOf(NotLaunchableError);
+    await expect(launchPost(running)).rejects.toBeInstanceOf(NotLaunchableError);
+  });
+
+  it('prefers a ready post over an earlier planned one', async () => {
+    const project = await makeProject();
+    await makePost(project.id, { scheduledAt: new Date(Date.now() + 3600_000) });
+    const ready = await makePost(project.id, {
+      status: 'ready',
+      textHtml: '<b>готово</b>',
+      scheduledAt: new Date(Date.now() + 5 * 3600_000),
+    });
+
+    const result = await launchProject(project.id);
+    expect(result.postId).toBe(ready);
+    expect(result.job).toBe('publish_post');
+  });
+
+  it('creates a slot when the project keeps no buffer', async () => {
+    const project = await makeProject({ postsBuffer: 0 });
+
+    const result = await launchProject(project.id);
+    expect(result.created).toBe(true);
+    expect(result.job).toBe('generate_and_publish');
+
+    const rows = await db.select().from(posts).where(eq(posts.projectId, project.id));
+    expect(rows).toHaveLength(1);
   });
 });
 

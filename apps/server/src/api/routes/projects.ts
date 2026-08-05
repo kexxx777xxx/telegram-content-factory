@@ -14,6 +14,7 @@ import {
   toDto,
   updateProject,
 } from '../../services/projects.js';
+import { launchProject, NotLaunchableError } from '../../services/publishNow.js';
 import { verifyTelegram } from '../../telegram/verify.js';
 
 export const projectsRouter: Router = Router();
@@ -153,6 +154,30 @@ projectsRouter.post('/projects/:id/verify-telegram', async (req, res) => {
     'telegram verification',
   );
   res.json(check);
+});
+
+/**
+ * Publishes the project's nearest slot right now, creating one if the project
+ * keeps no buffer. The single button behind "запустити зараз".
+ */
+projectsRouter.post('/projects/:id/publish-now', async (req, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: firstIssue(params.error) });
+    return;
+  }
+
+  try {
+    const result = await launchProject(params.data.id);
+    logger.info({ projectId: params.data.id, ...result }, 'manual project launch');
+    res.status(202).json(result);
+  } catch (err) {
+    if (err instanceof NotLaunchableError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 });
 
 function firstIssue(error: z.ZodError): string {
