@@ -35,8 +35,12 @@ generationRouter.put('/config/generation/:action', async (req, res) => {
   const parsed = saveActionConfigSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, firstIssue(parsed.error));
 
-  if (parsed.data.steps === undefined && parsed.data.promptBody === undefined) {
-    return badRequest(res, 'Нічого зберігати: передайте steps або promptBody');
+  if (
+    parsed.data.steps === undefined &&
+    parsed.data.promptBody === undefined &&
+    parsed.data.apiKeyId === undefined
+  ) {
+    return badRequest(res, 'Нічого зберігати: передайте steps, promptBody або apiKeyId');
   }
 
   await saveActionConfig(params.data.action, query.data.projectId ?? null, parsed.data);

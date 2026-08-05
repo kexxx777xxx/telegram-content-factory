@@ -1,101 +1,116 @@
-import type { AiProvider, KeyPreference } from '@tcf/shared';
+import type { AiAction, AiProvider, KeyLevel } from '@tcf/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { decryptSecret } from '../crypto/secrets.js';
 import { db } from '../db/client.js';
-import { apiKeys } from '../db/schema.js';
+import { apiKeys, modelChains, projects } from '../db/schema.js';
 
 export interface ResolvedKey {
   id: string;
   label: string;
-  scope: 'global' | 'project';
+  /** Which level supplied it — shown in the UI and in the attempt trail. */
+  level: KeyLevel;
   secret: string;
   rpmLimit: number | null;
   dailyRequestBudget: number | null;
 }
 
 /**
- * Keys to spend for one chain step, in order.
+ * Which key pays for this call.
  *
- * The project's own key goes first and the global one is the shared fallback —
- * which is exactly why the global key deserves the tightest `rpmLimit` and a
- * `dailyRequestBudget`: without them, one project's burst drains the safety net
- * for every other project.
+ *   action key  →  project key  →  default key
+ *
+ * One key, no list. There is deliberately no fall-through *between* keys: if
+ * images are set to the paid key, they are paid for — a silent hop to the free
+ * one would make the setting a suggestion rather than a decision. When the
+ * chosen key is exhausted the chain moves to the next **model**, and that is
+ * where an alternative belongs.
  */
-export async function resolveKeys(
+export async function resolveKey(
   projectId: string | null,
   provider: AiProvider,
-  preference: KeyPreference,
-  pinnedKeyId?: string | null,
-): Promise<ResolvedKey[]> {
-  /*
-   * A pinned key wins outright, with no fallback to the others.
-   *
-   * That is the point: pinning a paid key to image generation means images
-   * must be paid for, not "paid for unless something else is cheaper". If the
-   * pinned key is unavailable the step is skipped and the *next chain step*
-   * decides — which is where an alternative belongs.
-   */
-  if (pinnedKeyId) {
-    const [row] = await db
-      .select()
-      .from(apiKeys)
-      .where(and(eq(apiKeys.id, pinnedKeyId), eq(apiKeys.enabled, true)))
+  action?: AiAction,
+): Promise<ResolvedKey | null> {
+  if (projectId && action) {
+    const [chain] = await db
+      .select({ apiKeyId: modelChains.apiKeyId })
+      .from(modelChains)
+      .where(and(eq(modelChains.action, action), eq(modelChains.projectId, projectId)))
       .limit(1);
-    if (!row || row.provider !== provider) return [];
-    return [toResolved(row, row.scope)];
+    const fromAction = await load(chain?.apiKeyId ?? null, provider, 'action');
+    if (fromAction) return fromAction;
   }
 
-  const wantProject = preference !== 'global_only' && projectId !== null;
-  const wantGlobal = preference !== 'project_only';
-
-  const resolved: ResolvedKey[] = [];
-
-  if (wantProject && projectId) {
-    const rows = await db
-      .select()
-      .from(apiKeys)
-      .where(
-        and(
-          eq(apiKeys.projectId, projectId),
-          eq(apiKeys.provider, provider),
-          eq(apiKeys.scope, 'project'),
-          eq(apiKeys.enabled, true),
-        ),
-      );
-    for (const row of rows) resolved.push(toResolved(row, 'project'));
+  // The global chain can carry a key too, so an action can be pinned once for
+  // every project rather than repeated in each of them.
+  if (action) {
+    const [globalChain] = await db
+      .select({ apiKeyId: modelChains.apiKeyId })
+      .from(modelChains)
+      .where(and(eq(modelChains.action, action), isNull(modelChains.projectId)))
+      .limit(1);
+    const fromGlobalAction = await load(globalChain?.apiKeyId ?? null, provider, 'action');
+    if (fromGlobalAction) return fromGlobalAction;
   }
 
-  if (wantGlobal) {
-    const rows = await db
-      .select()
-      .from(apiKeys)
-      .where(
-        and(
-          isNull(apiKeys.projectId),
-          eq(apiKeys.provider, provider),
-          eq(apiKeys.scope, 'global'),
-          eq(apiKeys.enabled, true),
-        ),
-      );
-    for (const row of rows) resolved.push(toResolved(row, 'global'));
+  if (projectId) {
+    const [project] = await db
+      .select({ apiKeyId: projects.apiKeyId })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    const fromProject = await load(project?.apiKeyId ?? null, provider, 'project');
+    if (fromProject) return fromProject;
   }
 
-  return resolved;
+  const [fallback] = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.provider, provider), eq(apiKeys.isDefault, true), eq(apiKeys.enabled, true)))
+    .limit(1);
+
+  return fallback ? toResolved(fallback, 'default') : null;
 }
 
-function toResolved(row: typeof apiKeys.$inferSelect, scope: 'global' | 'project'): ResolvedKey {
+/** Returns null for a missing, disabled or wrong-provider key, so the next level applies. */
+async function load(
+  keyId: string | null,
+  provider: AiProvider,
+  level: KeyLevel,
+): Promise<ResolvedKey | null> {
+  if (!keyId) return null;
+  const [row] = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true)))
+    .limit(1);
+  return row && row.provider === provider ? toResolved(row, level) : null;
+}
+
+function toResolved(row: typeof apiKeys.$inferSelect, level: KeyLevel): ResolvedKey {
   return {
     id: row.id,
     label: row.label,
-    scope,
+    level,
     secret: decryptSecret(row.secretEnc),
     rpmLimit: row.rpmLimit,
     dailyRequestBudget: row.dailyRequestBudget,
   };
 }
 
-/** Any usable key at all — used by the UI to warn before the first slot fails. */
-export async function hasUsableKey(projectId: string | null, provider: AiProvider): Promise<boolean> {
-  const keys = await resolveKeys(projectId, provider, 'project_then_global');
-  return keys.length > 0;
+/** What the settings screen shows next to each action. */
+export async function describeKey(
+  projectId: string | null,
+  action: AiAction,
+): Promise<{ level: KeyLevel; label: string | null }> {
+  const key = await resolveKey(projectId, 'gemini', action);
+  return key ? { level: key.level, label: key.label } : { level: 'default', label: null };
+}
+
+export async function hasAnyKey(provider: AiProvider = 'gemini'): Promise<boolean> {
+  const [row] = await db
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.provider, provider), eq(apiKeys.enabled, true)))
+    .limit(1);
+  return Boolean(row);
 }

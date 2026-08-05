@@ -1,4 +1,4 @@
-import { AI_ACTIONS, type AiAction, type KeyPreference } from '@tcf/shared';
+import { AI_ACTIONS, type AiAction } from '@tcf/shared';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { modelChains, modelChainSteps } from '../db/schema.js';
@@ -11,9 +11,6 @@ export interface ChainStep {
   model: string;
   params: { temperature?: number; maxOutputTokens?: number; thinkingBudget?: number };
   promptId: string | null;
-  keyPreference: KeyPreference;
-  /** Overrides `keyPreference` with one exact key. */
-  apiKeyId: string | null;
 }
 
 export interface ResolvedChain {
@@ -22,6 +19,8 @@ export interface ResolvedChain {
   projectId: string | null;
   action: AiAction;
   enabled: boolean;
+  /** Key for this action; null means inherit from project, then default. */
+  apiKeyId: string | null;
   steps: ChainStep[];
 }
 
@@ -73,6 +72,7 @@ async function loadChain(where: ReturnType<typeof and>): Promise<ResolvedChain |
     projectId: chain.projectId,
     action: chain.action,
     enabled: chain.enabled,
+    apiKeyId: chain.apiKeyId,
     steps: steps.map((step) => ({
       id: step.id,
       position: step.position,
@@ -80,8 +80,6 @@ async function loadChain(where: ReturnType<typeof and>): Promise<ResolvedChain |
       model: step.model,
       params: (step.params ?? {}) as ChainStep['params'],
       promptId: step.promptId,
-      keyPreference: step.keyPreference,
-      apiKeyId: step.apiKeyId,
     })),
   };
 }
@@ -110,8 +108,6 @@ export async function ensureDefaultChains(): Promise<void> {
         model,
         params: {},
         promptId: null,
-        keyPreference: 'project_then_global' as const,
-        apiKeyId: null,
       })),
     );
 
@@ -163,8 +159,6 @@ export async function saveChain(
           model: step.model,
           params: step.params,
           promptId: step.promptId,
-          keyPreference: step.keyPreference,
-          apiKeyId: step.apiKeyId,
         })),
       );
     }
@@ -193,6 +187,7 @@ async function loadChainTx(
     projectId: chain.projectId,
     action: chain.action,
     enabled: chain.enabled,
+    apiKeyId: chain.apiKeyId,
     steps: steps.map((step) => ({
       id: step.id,
       position: step.position,
@@ -200,8 +195,6 @@ async function loadChainTx(
       model: step.model,
       params: (step.params ?? {}) as ChainStep['params'],
       promptId: step.promptId,
-      keyPreference: step.keyPreference,
-      apiKeyId: step.apiKeyId,
     })),
   };
 }

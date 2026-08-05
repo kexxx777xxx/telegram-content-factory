@@ -4,6 +4,7 @@ import type {
   ApiKeyDto,
   ChainStepInput,
   DryRunResult,
+  KeyLevel,
   ModelInfo,
 } from '@tcf/shared';
 import {
@@ -29,6 +30,12 @@ const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
   svg_repair: { title: 'Ремонт SVG', hint: 'Виклик, коли санітайзер відхилив схему' },
   image_prompt: { title: 'Промпт для зображення', hint: 'Коли режим — image-модель' },
   image: { title: 'Малювання зображення', hint: 'Модель, що малює за промптом вище' },
+};
+
+const KEY_LEVEL_LABELS: Record<KeyLevel, string> = {
+  action: 'закріплений за дією',
+  project: 'ключ проєкту',
+  default: 'дефолтний',
 };
 
 const VARIABLES: Record<AiAction, string[]> = {
@@ -123,6 +130,7 @@ function ActionRow({
 }) {
   const [steps, setSteps] = useState<ChainStepInput[]>(config.steps);
   const [promptBody, setPromptBody] = useState(config.prompt.body);
+  const [apiKeyId, setApiKeyId] = useState<string | null>(config.apiKeyId);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dry, setDry] = useState<DryRunResult | null>(null);
@@ -132,17 +140,22 @@ function ActionRow({
   useEffect(() => {
     setSteps(config.steps);
     setPromptBody(config.prompt.body);
+    setApiKeyId(config.apiKeyId);
   }, [config]);
 
   const label = ACTION_LABELS[config.action];
   const dirty =
-    promptBody !== config.prompt.body || JSON.stringify(steps) !== JSON.stringify(config.steps);
+    promptBody !== config.prompt.body ||
+    apiKeyId !== config.apiKeyId ||
+    JSON.stringify(steps) !== JSON.stringify(config.steps);
 
   async function save() {
     setSaving(true);
     setSaved(false);
     try {
-      onSaved(await api.saveGenerationConfig(config.action, projectId, { steps, promptBody }));
+      onSaved(
+        await api.saveGenerationConfig(config.action, projectId, { steps, promptBody, apiKeyId }),
+      );
       setSaved(true);
     } finally {
       setSaving(false);
@@ -188,7 +201,8 @@ function ActionRow({
     }
   }
 
-  const overridden = projectId && (!config.chainInherited || !config.promptInherited);
+  const overridden =
+    projectId && (!config.chainInherited || !config.promptInherited || config.apiKeyId !== null);
 
   return (
     <div className="rounded-lg border border-slate-200">
@@ -234,7 +248,6 @@ function ActionRow({
                   index={index}
                   total={steps.length}
                   models={models}
-                  keys={keys}
                   action={config.action}
                   onChange={(next) => setSteps(steps.map((s, i) => (i === index ? next : s)))}
                   onMove={(delta) => {
@@ -258,8 +271,6 @@ function ActionRow({
                       model: modelsForAction(models, config.action)[0]?.id ?? '',
                       params: {},
                       promptId: null,
-                      keyPreference: 'project_then_global',
-                      apiKeyId: null,
                     },
                   ])
                 }
@@ -270,6 +281,37 @@ function ActionRow({
               </button>
             </div>
           </div>
+
+          <Field
+            label="Ключ для цієї дії"
+            hint={
+              apiKeyId === null ? (
+                <>
+                  Зараз працює <b>{config.keyLabel ?? 'жоден'}</b> ({KEY_LEVEL_LABELS[config.keyLevel]}).
+                  Ієрархія: дія → проєкт → дефолтний.
+                </>
+              ) : (
+                'Вибраний ключ використовується завжди; підміни на інший ключ не буде.'
+              )
+            }
+          >
+            <Select
+              value={apiKeyId ?? ''}
+              onChange={(e) => setApiKeyId(e.target.value || null)}
+            >
+              <option value="">
+                {projectId ? 'успадкувати (ключ проєкту → дефолтний)' : 'дефолтний ключ'}
+              </option>
+              {keys
+                .filter((k) => k.enabled)
+                .map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.label}
+                    {k.isDefault ? ' (дефолтний)' : ''}
+                  </option>
+                ))}
+            </Select>
+          </Field>
 
           <Field
             label="Промпт"
@@ -350,7 +392,6 @@ function StepRow({
   index,
   total,
   models,
-  keys,
   action,
   onChange,
   onMove,
@@ -360,7 +401,6 @@ function StepRow({
   index: number;
   total: number;
   models: ModelInfo[];
-  keys: ApiKeyDto[];
   action: AiAction;
   onChange: (next: ChainStepInput) => void;
   onMove: (delta: number) => void;
@@ -390,33 +430,6 @@ function StepRow({
             {m.displayName && m.displayName !== m.id ? `${m.displayName} — ${m.id}` : m.id}
           </option>
         ))}
-      </Select>
-
-      <Select
-        value={step.apiKeyId ?? ''}
-        className="w-auto"
-        title="Прикріпити крок до конкретного ключа"
-        onChange={(e) => onChange({ ...step, apiKeyId: e.target.value || null })}
-      >
-        <option value="">ключ: за областю</option>
-        {keys
-          .filter((k) => k.enabled)
-          .map((k) => (
-            <option key={k.id} value={k.id}>
-              ключ: {k.label}
-            </option>
-          ))}
-      </Select>
-
-      <Select
-        value={step.keyPreference}
-        className="w-auto"
-        disabled={step.apiKeyId !== null}
-        onChange={(e) => onChange({ ...step, keyPreference: e.target.value as never })}
-      >
-        <option value="project_then_global">ключ проєкту → глобальний</option>
-        <option value="project_only">лише ключ проєкту</option>
-        <option value="global_only">лише глобальний</option>
       </Select>
 
       <Input

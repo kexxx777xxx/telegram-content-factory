@@ -1,8 +1,8 @@
 import type { ApiKeyDto, ApiKeyInput, ApiKeyUpdate } from '@tcf/shared';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { encryptSecret, maskStoredSecret } from '../crypto/secrets.js';
 import { db } from '../db/client.js';
-import { apiKeys, apiKeyUsage, projects, rateLimitState } from '../db/schema.js';
+import { apiKeys, apiKeyUsage, rateLimitState } from '../db/schema.js';
 
 export class ApiKeyConflictError extends Error {}
 export class ApiKeyNotFoundError extends Error {}
@@ -12,10 +12,7 @@ function today(): string {
 }
 
 export async function listApiKeys(): Promise<ApiKeyDto[]> {
-  const rows = await db
-    .select({ key: apiKeys, projectName: projects.name })
-    .from(apiKeys)
-    .leftJoin(projects, eq(apiKeys.projectId, projects.id));
+  const rows = await db.select().from(apiKeys).orderBy(desc(apiKeys.isDefault), asc(apiKeys.createdAt));
 
   const usage = await db
     .select({
@@ -39,14 +36,12 @@ export async function listApiKeys(): Promise<ApiKeyDto[]> {
 
   const usageByKey = new Map(usage.map((u) => [u.apiKeyId, u]));
 
-  return rows.map(({ key, projectName }) => ({
+  return rows.map((key) => ({
     id: key.id,
     provider: key.provider,
     label: key.label,
     secretMask: maskStoredSecret(key.secretEnc) ?? '···',
-    scope: key.scope,
-    projectId: key.projectId,
-    projectName: projectName ?? null,
+    isDefault: key.isDefault,
     enabled: key.enabled,
     rpmLimit: key.rpmLimit,
     dailyRequestBudget: key.dailyRequestBudget,
@@ -63,46 +58,43 @@ export async function listApiKeys(): Promise<ApiKeyDto[]> {
 }
 
 export async function createApiKey(input: ApiKeyInput): Promise<string> {
-  if (input.scope === 'project' && !input.projectId) {
-    throw new ApiKeyConflictError('Для ключа з областю «проєкт» треба вказати проєкт');
-  }
-  if (input.scope === 'global' && input.projectId) {
-    throw new ApiKeyConflictError('Глобальний ключ не належить проєкту');
-  }
+  return db.transaction(async (tx) => {
+    // api_keys_default_uniq allows one default per provider, so the previous
+    // one is demoted rather than letting the insert fail: marking a key default
+    // is an unambiguous instruction, not a request to resolve a conflict.
+    if (input.isDefault) await clearDefault(tx, input.provider, null);
 
-  // Mirrors api_keys_project_uniq: one key per project per provider, so the
-  // chain runner never has to guess which of two project keys to prefer.
-  if (input.scope === 'project' && input.projectId) {
-    const [existing] = await db
-      .select({ id: apiKeys.id })
-      .from(apiKeys)
-      .where(
-        and(
-          eq(apiKeys.projectId, input.projectId),
-          eq(apiKeys.provider, input.provider),
-          eq(apiKeys.scope, 'project'),
-        ),
-      )
-      .limit(1);
-    if (existing) throw new ApiKeyConflictError('У цього проєкту вже є ключ для цього провайдера');
-  }
+    const [row] = await tx
+      .insert(apiKeys)
+      .values({
+        provider: input.provider,
+        label: input.label,
+        secretEnc: encryptSecret(input.secret),
+        isDefault: input.isDefault,
+        enabled: input.enabled,
+        rpmLimit: input.rpmLimit,
+        dailyRequestBudget: input.dailyRequestBudget,
+      })
+      .returning({ id: apiKeys.id });
 
-  const [row] = await db
-    .insert(apiKeys)
-    .values({
-      provider: input.provider,
-      label: input.label,
-      secretEnc: encryptSecret(input.secret),
-      scope: input.scope,
-      projectId: input.projectId,
-      enabled: input.enabled,
-      rpmLimit: input.rpmLimit,
-      dailyRequestBudget: input.dailyRequestBudget,
-    })
-    .returning({ id: apiKeys.id });
+    if (!row) throw new Error('api key insert returned no row');
+    return row.id;
+  });
+}
 
-  if (!row) throw new Error('api key insert returned no row');
-  return row.id;
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function clearDefault(tx: Tx, provider: 'gemini', keepId: string | null): Promise<void> {
+  await tx
+    .update(apiKeys)
+    .set({ isDefault: false, updatedAt: new Date() })
+    .where(
+      and(
+        eq(apiKeys.provider, provider),
+        eq(apiKeys.isDefault, true),
+        ...(keepId ? [ne(apiKeys.id, keepId)] : []),
+      ),
+    );
 }
 
 export async function updateApiKey(id: string, patch: ApiKeyUpdate): Promise<void> {
@@ -110,18 +102,41 @@ export async function updateApiKey(id: string, patch: ApiKeyUpdate): Promise<voi
 
   if (patch.label !== undefined) values.label = patch.label;
   if (patch.enabled !== undefined) values.enabled = patch.enabled;
+  if (patch.isDefault !== undefined) values.isDefault = patch.isDefault;
   if (patch.rpmLimit !== undefined) values.rpmLimit = patch.rpmLimit;
   if (patch.dailyRequestBudget !== undefined) values.dailyRequestBudget = patch.dailyRequestBudget;
   // Empty string means "keep the stored secret" — same contract as bot tokens.
   if (patch.secret) values.secretEnc = encryptSecret(patch.secret);
 
-  const [row] = await db.update(apiKeys).set(values).where(eq(apiKeys.id, id)).returning({ id: apiKeys.id });
-  if (!row) throw new ApiKeyNotFoundError('Ключ не знайдено');
+  await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+    if (!current) throw new ApiKeyNotFoundError('Ключ не знайдено');
+
+    if (patch.isDefault) await clearDefault(tx, current.provider, id);
+
+    await tx.update(apiKeys).set(values).where(eq(apiKeys.id, id));
+  });
 }
 
 export async function deleteApiKey(id: string): Promise<void> {
-  const [row] = await db.delete(apiKeys).where(eq(apiKeys.id, id)).returning({ id: apiKeys.id });
+  const [row] = await db
+    .delete(apiKeys)
+    .where(eq(apiKeys.id, id))
+    .returning({ id: apiKeys.id, isDefault: apiKeys.isDefault, provider: apiKeys.provider });
   if (!row) throw new ApiKeyNotFoundError('Ключ не знайдено');
+
+  // Projects and chains pointing at it fall back by ON DELETE SET NULL, but if
+  // the default itself is gone nothing generates at all — promote the oldest
+  // remaining key rather than leaving the system silently keyless.
+  if (row.isDefault) {
+    const [next] = await db
+      .select({ id: apiKeys.id })
+      .from(apiKeys)
+      .where(and(eq(apiKeys.provider, row.provider), eq(apiKeys.enabled, true)))
+      .orderBy(asc(apiKeys.createdAt))
+      .limit(1);
+    if (next) await db.update(apiKeys).set({ isDefault: true }).where(eq(apiKeys.id, next.id));
+  }
 }
 
 export async function getApiKeySecret(id: string): Promise<{ provider: 'gemini'; secret: string }> {

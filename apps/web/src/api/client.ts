@@ -127,7 +127,7 @@ export const api = {
   saveGenerationConfig: (
     action: AiAction,
     projectId: string | undefined,
-    body: { steps?: ChainStepInput[]; promptBody?: string },
+    body: { steps?: ChainStepInput[]; promptBody?: string; apiKeyId?: string | null },
   ) =>
     request<ActionConfig[]>(
       `/config/generation/${action}${projectId ? `?projectId=${projectId}` : ''}`,

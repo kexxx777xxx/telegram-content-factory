@@ -1,9 +1,9 @@
-import type { AiAction } from '@tcf/shared';
+import type { AiAction, KeyLevel } from '@tcf/shared';
 import { logger } from '../logger.js';
 import { renderPrompt, resolvePrompt } from '../prompts/resolve.js';
 import { resolveChain, type ChainStep } from './chains.js';
 import { providers } from './gemini.js';
-import { resolveKeys } from './keys.js';
+import { resolveKey } from './keys.js';
 import { acquire, closeCircuit, openCircuit, recordUsage } from './rateLimiter.js';
 import { LlmError, type LlmUsage } from './provider.js';
 
@@ -12,7 +12,7 @@ export interface ChainAttempt {
   position: number;
   model: string;
   keyLabel: string;
-  keyScope: 'global' | 'project';
+  keyLevel: KeyLevel;
   outcome: 'success' | 'rate_limited' | 'auth_failed' | 'invalid' | 'error' | 'skipped';
   detail?: string;
   retryAt?: string;
@@ -93,7 +93,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
         position: step.position,
         model: step.model,
         keyLabel: '—',
-        keyScope: 'global',
+        keyLevel: 'default',
         outcome: 'invalid',
         detail: `Невідомий провайдер ${step.provider}`,
       });
@@ -102,29 +102,21 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
 
     const prompt = await resolvePrompt(options.action, options.projectId, step.model, step.promptId);
     const rendered = renderPrompt(prompt.body, options.variables);
-    const keys = await resolveKeys(
-      options.projectId,
-      step.provider,
-      step.keyPreference,
-      step.apiKeyId,
-    );
+    const key = await resolveKey(options.projectId, step.provider, options.action);
 
-    if (keys.length === 0) {
+    if (!key) {
       attempts.push({
         position: step.position,
         model: step.model,
         keyLabel: '—',
-        keyScope: 'global',
+        keyLevel: 'default',
         outcome: 'skipped',
-        detail: step.apiKeyId
-          ? 'Прикріплений до кроку ключ вимкнений або видалений'
-          : 'Немає доступного API-ключа для цього кроку',
+        detail: 'Немає доступного API-ключа: задайте дефолтний у налаштуваннях',
       });
       continue;
     }
 
-    for (const key of keys) {
-      if (deadKeys.has(key.id)) continue;
+    if (!deadKeys.has(key.id)) {
 
       const gate = await acquire(key.id, step.model, {
         rpmLimit: key.rpmLimit,
@@ -137,7 +129,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
           position: step.position,
           model: step.model,
           keyLabel: key.label,
-          keyScope: key.scope,
+          keyLevel: key.level,
           outcome: 'skipped',
           detail: describeDenial(gate.reason),
           retryAt: gate.retryAt.toISOString(),
@@ -164,7 +156,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
           position: step.position,
           model: step.model,
           keyLabel: key.label,
-          keyScope: key.scope,
+          keyLevel: key.level,
           outcome: 'success',
           durationMs: Date.now() - startedAt,
         });
@@ -190,7 +182,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
             position: step.position,
             model: step.model,
             keyLabel: key.label,
-            keyScope: key.scope,
+            keyLevel: key.level,
             outcome: 'rate_limited',
             detail: error.message,
             retryAt: blockedUntil.toISOString(),
@@ -205,7 +197,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
             position: step.position,
             model: step.model,
             keyLabel: key.label,
-            keyScope: key.scope,
+            keyLevel: key.level,
             outcome: 'auth_failed',
             detail: error.message,
             durationMs,
@@ -217,15 +209,12 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
           position: step.position,
           model: step.model,
           keyLabel: key.label,
-          keyScope: key.scope,
+          keyLevel: key.level,
           outcome: error.kind === 'invalid' ? 'invalid' : 'error',
           detail: error.message,
           durationMs,
         });
 
-        // A malformed request or unknown model fails identically on every key,
-        // so move to the next model rather than burning the remaining keys.
-        if (error.kind === 'invalid') break;
       }
     }
   }
@@ -242,8 +231,6 @@ function syntheticStep(model: string, template: ChainStep | undefined): ChainSte
     model,
     params: template?.params ?? {},
     promptId: null,
-    keyPreference: template?.keyPreference ?? 'project_then_global',
-    apiKeyId: template?.apiKeyId ?? null,
   };
 }
 

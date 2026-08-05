@@ -30,7 +30,7 @@ keysRouter.post('/keys', async (req, res) => {
   try {
     const id = await createApiKey(parsed.data);
     invalidateCatalog(parsed.data.provider);
-    logger.info({ keyId: id, scope: parsed.data.scope }, 'api key created');
+    logger.info({ keyId: id, isDefault: parsed.data.isDefault }, 'api key created');
     res.status(201).json({ id });
   } catch (err) {
     if (err instanceof ApiKeyConflictError) {

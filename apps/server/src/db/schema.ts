@@ -4,8 +4,6 @@ import {
   IMAGE_MODES,
   JOB_STATUSES,
   JOB_TYPES,
-  KEY_PREFERENCES,
-  KEY_SCOPES,
   MISS_POLICIES,
   POST_STATUSES,
   PROJECT_STATUSES,
@@ -15,6 +13,7 @@ import {
   TOPIC_STATUSES,
 } from '@tcf/shared';
 import { sql } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   boolean,
   index,
@@ -41,8 +40,6 @@ export const topicSourceEnum = pgEnum('topic_source', TOPIC_SOURCES);
 export const aiActionEnum = pgEnum('ai_action', AI_ACTIONS);
 export const aiProviderEnum = pgEnum('ai_provider', AI_PROVIDERS);
 export const promptScopeEnum = pgEnum('prompt_scope', PROMPT_SCOPES);
-export const keyScopeEnum = pgEnum('key_scope', KEY_SCOPES);
-export const keyPreferenceEnum = pgEnum('key_preference', KEY_PREFERENCES);
 export const jobStatusEnum = pgEnum('job_status', JOB_STATUSES);
 export const jobTypeEnum = pgEnum('job_type', JOB_TYPES);
 
@@ -75,6 +72,11 @@ export const projects = pgTable(
     /** AES-256-GCM, never leaves the server unmasked. */
     telegramBotTokenEnc: text('telegram_bot_token_enc'),
     adminChatId: text('admin_chat_id'),
+
+    /** Overrides the default key for everything this project generates. */
+    apiKeyId: uuid('api_key_id').references((): AnyPgColumn => apiKeys.id, {
+      onDelete: 'set null',
+    }),
 
     imageMode: imageModeEnum('image_mode').notNull().default('svg'),
     publishMode: publishModeEnum('publish_mode').notNull().default('auto'),
@@ -111,8 +113,8 @@ export const apiKeys = pgTable(
     provider: aiProviderEnum('provider').notNull().default('gemini'),
     label: text('label').notNull(),
     secretEnc: text('secret_enc').notNull(),
-    scope: keyScopeEnum('scope').notNull(),
-    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    /** Used whenever nothing more specific is chosen. Exactly one may be set. */
+    isDefault: boolean('is_default').notNull().default(false),
     enabled: boolean('enabled').notNull().default(true),
     /** Soft cap enforced by the limiter; the shared global key gets the tightest one. */
     dailyRequestBudget: integer('daily_request_budget'),
@@ -122,10 +124,10 @@ export const apiKeys = pgTable(
     updatedAt,
   },
   (t) => [
-    index('api_keys_scope_idx').on(t.scope, t.enabled),
-    uniqueIndex('api_keys_project_uniq')
-      .on(t.projectId, t.provider)
-      .where(sql`${t.scope} = 'project'`),
+    index('api_keys_enabled_idx').on(t.enabled),
+    // One default per provider, enforced by the database rather than by
+    // remembering to clear the old one.
+    uniqueIndex('api_keys_default_uniq').on(t.provider).where(sql`${t.isDefault}`),
   ],
 );
 
@@ -168,6 +170,8 @@ export const modelChains = pgTable(
     projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
     action: aiActionEnum('action').notNull(),
     enabled: boolean('enabled').notNull().default(true),
+    /** Overrides the project key for this action — "images use the paid key". */
+    apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
     createdAt,
     updatedAt,
   },
@@ -186,18 +190,6 @@ export const modelChainSteps = pgTable(
     model: text('model').notNull(),
     params: jsonb('params').notNull().default(sql`'{}'::jsonb`),
     promptId: uuid('prompt_id').references(() => prompts.id, { onDelete: 'set null' }),
-    keyPreference: keyPreferenceEnum('key_preference').notNull().default('project_then_global'),
-    /**
-     * Pins this step to one specific key, overriding `keyPreference`.
-     *
-     * The case this exists for: a paid key that should pay for images only,
-     * while text keeps running on the free one. Scope alone cannot express
-     * that — both keys are global, and the difference is what they are *for*.
-     * On delete the pin clears and the step falls back to preference order,
-     * which is the safe direction: work continues on a cheaper key rather than
-     * stopping.
-     */
-    apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
   },
   (t) => [uniqueIndex('model_chain_steps_position_uniq').on(t.chainId, t.position)],
 );

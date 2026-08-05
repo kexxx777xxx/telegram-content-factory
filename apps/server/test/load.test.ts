@@ -95,7 +95,7 @@ async function seedProjects(count: number): Promise<void> {
     provider: 'gemini',
     label: 'shared',
     secretEnc: encryptSecret('fake-secret'),
-    scope: 'global',
+    isDefault: true,
   });
 
   for (let i = 0; i < count; i++) {

@@ -2,9 +2,8 @@ import { z } from 'zod';
 import {
   AI_ACTIONS,
   AI_PROVIDERS,
+  KEY_LEVELS,
   IMAGE_MODES,
-  KEY_PREFERENCES,
-  KEY_SCOPES,
   MISS_POLICIES,
   POST_STATUSES,
   PROJECT_STATUSES,
@@ -85,6 +84,9 @@ const projectFields = {
   telegramChannelId: telegramChannelSchema,
   adminChatId: z.string().nullable(),
 
+  /** null = use the default key. */
+  apiKeyId: z.string().uuid().nullable(),
+
   imageMode: z.enum(IMAGE_MODES),
   publishMode: z.enum(PUBLISH_MODES),
 
@@ -111,6 +113,7 @@ export const projectInputSchema = z.object({
   hashtags: projectFields.hashtags.default([]),
   telegramBotToken: z.string().min(20).optional(),
   adminChatId: projectFields.adminChatId.optional(),
+  apiKeyId: projectFields.apiKeyId.optional(),
   imageMode: projectFields.imageMode.default('svg'),
   publishMode: projectFields.publishMode.default('auto'),
   postsBuffer: projectFields.postsBuffer.default(3),
@@ -158,6 +161,7 @@ export const projectDtoSchema = z.object({
   telegramChannelUsername: z.string().nullable(),
   botTokenMask: z.string().nullable(),
   adminChatId: z.string().nullable(),
+  apiKeyId: z.string().uuid().nullable(),
 
   imageMode: z.enum(IMAGE_MODES),
   publishMode: z.enum(PUBLISH_MODES),
@@ -207,7 +211,6 @@ export const modelChainStepSchema = z.object({
     .default({}),
   /** Overrides the resolved prompt for this step only. */
   promptId: z.string().uuid().optional().nullable(),
-  keyPreference: z.enum(KEY_PREFERENCES).default('project_then_global'),
 });
 export type ModelChainStep = z.infer<typeof modelChainStepSchema>;
 
@@ -225,8 +228,8 @@ export const apiKeyInputSchema = z.object({
   provider: z.enum(AI_PROVIDERS).default('gemini'),
   label: z.string().min(1).max(120),
   secret: z.string().min(10),
-  scope: z.enum(KEY_SCOPES),
-  projectId: z.string().uuid().nullable().default(null),
+  /** Used whenever nothing more specific is chosen. */
+  isDefault: z.boolean().default(false),
   enabled: z.boolean().default(true),
   /** Proactive per-minute ceiling. null = react to 429 only. */
   rpmLimit: z.number().int().min(1).max(10_000).nullable().default(null),
@@ -239,6 +242,7 @@ export const apiKeyUpdateSchema = z
   .object({
     provider: z.enum(AI_PROVIDERS),
     label: z.string().min(1).max(120),
+    isDefault: z.boolean(),
     enabled: z.boolean(),
     rpmLimit: z.number().int().min(1).max(10_000).nullable(),
     dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable(),
@@ -252,9 +256,7 @@ export const apiKeyDtoSchema = z.object({
   provider: z.enum(AI_PROVIDERS),
   label: z.string(),
   secretMask: z.string(),
-  scope: z.enum(KEY_SCOPES),
-  projectId: z.string().uuid().nullable(),
-  projectName: z.string().nullable(),
+  isDefault: z.boolean(),
   enabled: z.boolean(),
   rpmLimit: z.number().int().nullable(),
   dailyRequestBudget: z.number().int().nullable(),
@@ -288,14 +290,6 @@ export const chainStepInputSchema = z.object({
     })
     .default({}),
   promptId: z.string().uuid().nullable().default(null),
-  keyPreference: z.enum(KEY_PREFERENCES).default('project_then_global'),
-  /**
-   * Pins the step to one key, overriding `keyPreference`.
-   *
-   * Exists for the "paid key pays for images only" case: both keys can be
-   * global, so scope cannot tell them apart — what differs is what each is for.
-   */
-  apiKeyId: z.string().uuid().nullable().default(null),
 });
 export type ChainStepInput = z.infer<typeof chainStepInputSchema>;
 
@@ -306,6 +300,11 @@ export type ChainStepInput = z.infer<typeof chainStepInputSchema>;
 export const actionConfigSchema = z.object({
   action: z.enum(AI_ACTIONS),
   steps: z.array(chainStepInputSchema),
+  /** null = inherit the project key, which in turn may inherit the default. */
+  apiKeyId: z.string().uuid().nullable(),
+  /** Which level actually supplies the key, for showing it without guessing. */
+  keyLevel: z.enum(KEY_LEVELS),
+  keyLabel: z.string().nullable(),
   chainInherited: z.boolean(),
   prompt: z.object({
     body: z.string(),
@@ -319,6 +318,8 @@ export type ActionConfig = z.infer<typeof actionConfigSchema>;
 export const saveActionConfigSchema = z.object({
   steps: z.array(chainStepInputSchema).min(1).max(10).optional(),
   promptBody: z.string().min(1).max(20_000).optional(),
+  /** `null` clears the action override; omitted leaves it as is. */
+  apiKeyId: z.string().uuid().nullable().optional(),
 });
 
 /* ── dry run ──────────────────────────────────────────────────────────────── */
@@ -335,7 +336,7 @@ export const chainAttemptSchema = z.object({
   position: z.number().int(),
   model: z.string(),
   keyLabel: z.string(),
-  keyScope: z.enum(KEY_SCOPES),
+  keyLevel: z.enum(KEY_LEVELS),
   outcome: z.enum(['success', 'rate_limited', 'auth_failed', 'invalid', 'error', 'skipped']),
   detail: z.string().optional(),
   retryAt: z.string().optional(),

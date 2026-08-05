@@ -5,6 +5,7 @@ import { assertTestDatabase } from './guard.js';
 import {
   apiKeys,
   jobs,
+  modelChains,
   posts,
   projects,
   prompts,
@@ -15,6 +16,7 @@ import { encryptSecret } from '../src/crypto/secrets.js';
 import { claimJob, completeJob, failJob, rescheduleJob } from '../src/queue/claim.js';
 import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
+import { resolveKey } from '../src/ai/keys.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
 
@@ -173,7 +175,6 @@ describe('rate limiting', () => {
         provider: 'gemini',
         label: 'test',
         secretEnc: encryptSecret('secret-value'),
-        scope: 'global',
         rpmLimit,
       })
       .returning({ id: apiKeys.id });
@@ -215,6 +216,70 @@ describe('rate limiting', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.retryAt.getTime()).toBe(until.getTime());
+  });
+});
+
+describe('key hierarchy', () => {
+  async function makeKey(label: string, isDefault = false): Promise<string> {
+    const [row] = await db
+      .insert(apiKeys)
+      .values({
+        provider: 'gemini',
+        label,
+        secretEnc: encryptSecret(`secret-${label}`),
+        isDefault,
+      })
+      .returning({ id: apiKeys.id });
+    return row!.id;
+  }
+
+  it('falls back to the default key when nothing more specific is set', async () => {
+    await makeKey('paid');
+    await makeKey('free', true);
+    const project = await makeProject();
+
+    const key = await resolveKey(project.id, 'gemini', 'post_text');
+    expect(key?.label).toBe('free');
+    expect(key?.level).toBe('default');
+  });
+
+  it('prefers the project key over the default', async () => {
+    await makeKey('free', true);
+    const paid = await makeKey('paid');
+    const project = await makeProject({ apiKeyId: paid });
+
+    const key = await resolveKey(project.id, 'gemini', 'post_text');
+    expect(key?.label).toBe('paid');
+    expect(key?.level).toBe('project');
+  });
+
+  it('prefers the action key over the project key', async () => {
+    const free = await makeKey('free', true);
+    const paid = await makeKey('paid');
+    const project = await makeProject({ apiKeyId: free });
+
+    await db
+      .insert(modelChains)
+      .values({ projectId: project.id, action: 'image', enabled: true, apiKeyId: paid });
+
+    const image = await resolveKey(project.id, 'gemini', 'image');
+    expect(image?.label).toBe('paid');
+    expect(image?.level).toBe('action');
+
+    // The pin is per action: text must stay on the project key.
+    const text = await resolveKey(project.id, 'gemini', 'post_text');
+    expect(text?.label).toBe('free');
+  });
+
+  it('skips a disabled key instead of failing the call', async () => {
+    const free = await makeKey('free', true);
+    const paid = await makeKey('paid');
+    await db.update(apiKeys).set({ enabled: false }).where(eq(apiKeys.id, paid));
+    const project = await makeProject({ apiKeyId: paid });
+
+    const key = await resolveKey(project.id, 'gemini', 'post_text');
+    expect(key?.id).toBe(free);
+    expect(key?.level).toBe('default');
   });
 });
 

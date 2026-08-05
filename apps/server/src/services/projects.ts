@@ -33,6 +33,7 @@ export function toDto(row: Project): ProjectDto {
     botTokenMask: maskStoredSecret(row.telegramBotTokenEnc),
     adminChatId: row.adminChatId,
 
+    apiKeyId: row.apiKeyId,
     imageMode: row.imageMode,
     publishMode: row.publishMode,
     postsBuffer: row.postsBuffer,
@@ -78,6 +79,7 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       telegramChannelId: input.telegramChannelId,
       telegramBotTokenEnc: input.telegramBotToken ? encryptSecret(input.telegramBotToken) : null,
       adminChatId: input.adminChatId ?? null,
+      apiKeyId: input.apiKeyId ?? null,
       imageMode: input.imageMode,
       publishMode: input.publishMode,
       postsBuffer: input.postsBuffer,
@@ -109,6 +111,7 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
     values.telegramChannelUsername = null;
   }
   if (patch.adminChatId !== undefined) values.adminChatId = patch.adminChatId ?? null;
+  if (patch.apiKeyId !== undefined) values.apiKeyId = patch.apiKeyId;
   if (patch.imageMode !== undefined) values.imageMode = patch.imageMode;
   if (patch.publishMode !== undefined) values.publishMode = patch.publishMode;
   if (patch.postsBuffer !== undefined) values.postsBuffer = patch.postsBuffer;

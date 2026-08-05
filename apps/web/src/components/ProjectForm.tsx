@@ -1,5 +1,6 @@
-import type { ProjectDto, ProjectInput, ProjectUpdate, Schedule } from '@tcf/shared';
-import { useState } from 'react';
+import type { ApiKeyDto, ProjectDto, ProjectInput, ProjectUpdate, Schedule } from '@tcf/shared';
+import { useEffect, useState } from 'react';
+import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
 import { Card, Field, Input, Notice, Select, Textarea } from './ui';
 
@@ -14,6 +15,7 @@ export interface ProjectFormValue {
   telegramChannelId: string;
   telegramBotToken: string;
   adminChatId: string;
+  apiKeyId: string;
   imageMode: ProjectInput['imageMode'];
   publishMode: ProjectInput['publishMode'];
   postsBuffer: number;
@@ -35,6 +37,7 @@ export function emptyForm(): ProjectFormValue {
     telegramChannelId: '',
     telegramBotToken: '',
     adminChatId: '',
+    apiKeyId: '',
     imageMode: 'svg',
     publishMode: 'auto',
     postsBuffer: 3,
@@ -58,6 +61,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     // Never prefilled: the server only ever returns a mask.
     telegramBotToken: '',
     adminChatId: project.adminChatId ?? '',
+    apiKeyId: project.apiKeyId ?? '',
     imageMode: project.imageMode,
     publishMode: project.publishMode,
     postsBuffer: project.postsBuffer,
@@ -102,6 +106,7 @@ function common(form: ProjectFormValue) {
       .map((tag) => `#${tag}`),
     telegramChannelId: form.telegramChannelId.trim(),
     adminChatId: form.adminChatId.trim() || null,
+    apiKeyId: form.apiKeyId || null,
     imageMode: form.imageMode,
     publishMode: form.publishMode,
     postsBuffer: form.postsBuffer,
@@ -147,6 +152,11 @@ export function ProjectForm({
   mode: 'create' | 'edit';
 }) {
   const [slugTouched, setSlugTouched] = useState(mode === 'edit');
+  const [keys, setKeys] = useState<ApiKeyDto[]>([]);
+
+  useEffect(() => {
+    void api.listKeys().then(setKeys);
+  }, []);
   const set = <K extends keyof ProjectFormValue>(key: K, next: ProjectFormValue[K]) =>
     onChange({ ...value, [key]: next });
 
@@ -277,6 +287,23 @@ export function ProjectForm({
       <Card title="Генерація">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="API-ключ проєкту"
+              hint="Оплачує все, для чого не вибрано окремий ключ у конкретній дії."
+            >
+              <Select value={value.apiKeyId} onChange={(e) => set('apiKeyId', e.target.value)}>
+                <option value="">Дефолтний ключ</option>
+                {keys
+                  .filter((k) => k.enabled)
+                  .map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.label}
+                      {k.isDefault ? ' (дефолтний)' : ''}
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+
             <Field label="Ілюстрація">
               <Select
                 value={value.imageMode}

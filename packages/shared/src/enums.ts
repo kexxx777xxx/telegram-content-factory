@@ -74,16 +74,19 @@ export type AiAction = (typeof AI_ACTIONS)[number];
 export const PROMPT_SCOPES = ['global', 'project', 'model'] as const;
 export type PromptScope = (typeof PROMPT_SCOPES)[number];
 
-export const KEY_SCOPES = ['global', 'project'] as const;
-export type KeyScope = (typeof KEY_SCOPES)[number];
-
-/** Which API keys a chain step may spend, and in what order. */
-export const KEY_PREFERENCES = [
-  'project_then_global',
-  'project_only',
-  'global_only',
-] as const;
-export type KeyPreference = (typeof KEY_PREFERENCES)[number];
+/**
+ * Which key pays for a call is decided by a plain hierarchy, most specific
+ * first:
+ *
+ *   action key  →  project key  →  default key
+ *
+ * There is no automatic fallback between keys. "The paid key draws images"
+ * has to mean exactly that; an implicit fall-through to a cheaper key would
+ * make the setting a suggestion. When a key is exhausted the chain moves to
+ * the next *model*, which is where an alternative belongs.
+ */
+export const KEY_LEVELS = ['action', 'project', 'default'] as const;
+export type KeyLevel = (typeof KEY_LEVELS)[number];
 
 export const AI_PROVIDERS = ['gemini'] as const;
 export type AiProvider = (typeof AI_PROVIDERS)[number];

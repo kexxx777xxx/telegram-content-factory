@@ -2,7 +2,7 @@ import type { ImageMode } from '@tcf/shared';
 import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js';
 import { resolveChain } from '../ai/chains.js';
 import { providers } from '../ai/gemini.js';
-import { resolveKeys } from '../ai/keys.js';
+import { resolveKey } from '../ai/keys.js';
 import { acquire, openCircuit, recordUsage } from '../ai/rateLimiter.js';
 import { LlmError } from '../ai/provider.js';
 import type { Project } from '../db/schema.js';
@@ -165,8 +165,13 @@ async function generateWithImageModel(
     const provider = providers[step.provider];
     if (!provider?.generateImage) continue;
 
-    const keys = await resolveKeys(project.id, step.provider, step.keyPreference, step.apiKeyId);
-    for (const key of keys) {
+    const key = await resolveKey(project.id, step.provider, 'image');
+    if (!key) {
+      notes.push(`${step.model}: немає доступного ключа`);
+      continue;
+    }
+
+    {
       const gate = await acquire(key.id, step.model, {
         rpmLimit: key.rpmLimit,
         dailyRequestBudget: key.dailyRequestBudget,

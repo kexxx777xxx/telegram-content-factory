@@ -1,5 +1,5 @@
-import type { ApiKeyDto, ProjectDto } from '@tcf/shared';
-import { AlertTriangle, Check, KeyRound, Loader2, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import type { ApiKeyDto } from '@tcf/shared';
+import { AlertTriangle, Check, KeyRound, Loader2, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { GenerationConfig } from '../components/GenerationConfig';
@@ -8,13 +8,11 @@ import { Badge, Button, Card, Field, Input, Notice, Select } from '../components
 
 export function SettingsPage() {
   const [keys, setKeys] = useState<ApiKeyDto[] | null>(null);
-  const [projects, setProjects] = useState<ProjectDto[]>([]);
 
   const reload = () => api.listKeys().then(setKeys);
 
   useEffect(() => {
     void reload();
-    void api.listProjects().then(setProjects);
   }, []);
 
   return (
@@ -24,28 +22,20 @@ export function SettingsPage() {
         <p className="mt-1 text-sm text-slate-500">API-ключі та глобальні дефолти генерації</p>
       </div>
 
-      <ApiKeysCard keys={keys} projects={projects} onChange={() => void reload()} />
+      <ApiKeysCard keys={keys} onChange={() => void reload()} />
       <QueueCard />
       <GenerationConfig />
     </div>
   );
 }
 
-function ApiKeysCard({
-  keys,
-  projects,
-  onChange,
-}: {
-  keys: ApiKeyDto[] | null;
-  projects: ProjectDto[];
-  onChange: () => void;
-}) {
+function ApiKeysCard({ keys, onChange }: { keys: ApiKeyDto[] | null; onChange: () => void }) {
   const [adding, setAdding] = useState(false);
 
   return (
     <Card
       title="API-ключі"
-      hint="Ліміти й блокування після 429 рахуються окремо на кожен ключ. Глобальний ключ — спільний фолбек, тож саме йому потрібні найжорсткіші ліміти."
+      hint="Ліміти й блокування після 429 рахуються окремо на кожен ключ. Один ключ — дефолтний: ним оплачується все, для чого не вибрано інший у проєкті чи в дії."
     >
       <div className="space-y-4">
         {!keys ? (
@@ -54,8 +44,8 @@ function ApiKeysCard({
           </div>
         ) : keys.length === 0 ? (
           <Notice>
-            Жодного ключа не додано — генерація не працюватиме. Додайте принаймні один глобальний
-            ключ.
+            Жодного ключа не додано — генерація не працюватиме. Додайте принаймні один ключ і
+            позначте його дефолтним.
           </Notice>
         ) : (
           <div className="space-y-2">
@@ -67,7 +57,7 @@ function ApiKeysCard({
 
         {adding ? (
           <AddKeyForm
-            projects={projects}
+            hasKeys={(keys?.length ?? 0) > 0}
             onDone={() => {
               setAdding(false);
               onChange();
@@ -100,6 +90,16 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
     }
   }
 
+  async function makeDefault() {
+    setBusy(true);
+    try {
+      await api.updateKey(apiKey.id, { isDefault: true });
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function remove() {
     if (!confirm(`Видалити ключ «${apiKey.label}»?`)) return;
     setBusy(true);
@@ -117,12 +117,16 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
         <KeyRound className="size-4 text-slate-400" />
         <span className="font-medium">{apiKey.label}</span>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">{apiKey.secretMask}</code>
-        <Badge tone={apiKey.scope === 'global' ? 'neutral' : 'green'}>
-          {apiKey.scope === 'global' ? 'глобальний' : (apiKey.projectName ?? 'проєкт')}
-        </Badge>
+        {apiKey.isDefault && <Badge tone="green">дефолтний</Badge>}
         {!apiKey.enabled && <Badge tone="red">вимкнено</Badge>}
 
         <span className="ml-auto flex items-center gap-2">
+          {!apiKey.isDefault && (
+            <Button variant="secondary" onClick={() => void makeDefault()} disabled={busy}>
+              <Star className="size-4" />
+              Зробити дефолтним
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => void verify()} disabled={busy}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             Перевірити
@@ -181,18 +185,18 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
 }
 
 function AddKeyForm({
-  projects,
+  hasKeys,
   onDone,
   onCancel,
 }: {
-  projects: ProjectDto[];
+  hasKeys: boolean;
   onDone: () => void;
   onCancel: () => void;
 }) {
   const [label, setLabel] = useState('');
   const [secret, setSecret] = useState('');
-  const [scope, setScope] = useState<'global' | 'project'>('global');
-  const [projectId, setProjectId] = useState('');
+  // The first key has to be the default, otherwise nothing can generate.
+  const [isDefault, setIsDefault] = useState(!hasKeys);
   const [rpmLimit, setRpmLimit] = useState('');
   const [dailyBudget, setDailyBudget] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -206,8 +210,7 @@ function AddKeyForm({
         provider: 'gemini',
         label,
         secret,
-        scope,
-        projectId: scope === 'project' ? projectId : null,
+        isDefault,
         enabled: true,
         rpmLimit: rpmLimit ? Number(rpmLimit) : null,
         dailyRequestBudget: dailyBudget ? Number(dailyBudget) : null,
@@ -229,28 +232,22 @@ function AddKeyForm({
         <Field label="Ключ">
           <Input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
         </Field>
-        <Field label="Область">
-          <Select value={scope} onChange={(e) => setScope(e.target.value as 'global' | 'project')}>
-            <option value="global">Глобальний (спільний фолбек)</option>
-            <option value="project">Проєктний</option>
-          </Select>
+        <Field label="Роль" hint="Дефолтним може бути лише один ключ; попередній стане звичайним.">
+          <label className="flex items-center gap-2 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={isDefault}
+              disabled={!hasKeys}
+              onChange={(e) => setIsDefault(e.target.checked)}
+              className="size-4 rounded border-slate-300"
+            />
+            Дефолтний ключ
+          </label>
         </Field>
-        {scope === 'project' && (
-          <Field label="Проєкт">
-            <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              <option value="">Оберіть проєкт</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        )}
         <Field label="Ліміт запитів/хв" hint="Порожньо — реагувати лише на 429.">
           <Input type="number" min={1} value={rpmLimit} onChange={(e) => setRpmLimit(e.target.value)} />
         </Field>
-        <Field label="Денний бюджет запитів" hint="Особливо важливий для глобального ключа.">
+        <Field label="Денний бюджет запитів" hint="Особливо важливий для дефолтного ключа.">
           <Input
             type="number"
             min={1}
@@ -265,7 +262,7 @@ function AddKeyForm({
       <div className="flex gap-2">
         <Button
           onClick={() => void submit()}
-          disabled={busy || !label || !secret || (scope === 'project' && !projectId)}
+          disabled={busy || !label || !secret}
         >
           {busy && <Loader2 className="size-4 animate-spin" />}
           Додати
