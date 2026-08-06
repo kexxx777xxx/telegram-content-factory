@@ -8,6 +8,7 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { projects, type Project } from '../db/schema.js';
 import { decryptSecret, encryptSecret, maskStoredSecret } from '../crypto/secrets.js';
+import { forgetSwitches } from './postLog.js';
 
 /** Thrown for conditions the API turns into 4xx rather than 500. */
 export class ProjectConflictError extends Error {}
@@ -40,6 +41,9 @@ export function toDto(row: Project): ProjectDto {
     topicsBufferMin: row.topicsBufferMin,
     leadTimeMinutes: row.leadTimeMinutes,
     missPolicy: row.missPolicy,
+    logRequests: row.logRequests,
+    logResponses: row.logResponses,
+    logRetentionDays: row.logRetentionDays,
     schedule: scheduleSchema.parse(row.schedule),
 
     createdAt: row.createdAt.toISOString(),
@@ -86,6 +90,9 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       topicsBufferMin: input.topicsBufferMin,
       leadTimeMinutes: input.leadTimeMinutes,
       missPolicy: input.missPolicy,
+      logRequests: input.logRequests,
+      logResponses: input.logResponses,
+      logRetentionDays: input.logRetentionDays,
       schedule: input.schedule,
     })
     .returning();
@@ -118,6 +125,9 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
   if (patch.topicsBufferMin !== undefined) values.topicsBufferMin = patch.topicsBufferMin;
   if (patch.leadTimeMinutes !== undefined) values.leadTimeMinutes = patch.leadTimeMinutes;
   if (patch.missPolicy !== undefined) values.missPolicy = patch.missPolicy;
+  if (patch.logRequests !== undefined) values.logRequests = patch.logRequests;
+  if (patch.logResponses !== undefined) values.logResponses = patch.logResponses;
+  if (patch.logRetentionDays !== undefined) values.logRetentionDays = patch.logRetentionDays;
   if (patch.schedule !== undefined) values.schedule = patch.schedule;
 
   // An empty string means "leave the stored token alone"; the UI sends that
@@ -126,6 +136,9 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
 
   const [row] = await db.update(projects).set(values).where(eq(projects.id, id)).returning();
   if (!row) throw new ProjectNotFoundError('Проєкт не знайдено');
+  // The chain runner caches the switches for half a minute; a save is the one
+  // moment the operator expects them to apply immediately.
+  forgetSwitches(id);
   return toDto(row);
 }
 

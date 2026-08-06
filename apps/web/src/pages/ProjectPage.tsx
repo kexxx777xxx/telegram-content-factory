@@ -14,7 +14,7 @@ import {
 } from '../components/ProjectForm';
 import { PostsCard } from '../components/PostsCard';
 import { TopicsCard } from '../components/TopicsCard';
-import { Button, Card, Input, Notice, SegmentedControl } from '../components/ui';
+import { Button, Card, Input, Notice, SegmentedControl, Tabs } from '../components/ui';
 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -28,6 +28,7 @@ export function ProjectPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [statusSaved, setStatusSaved] = useState(false);
+  const [tab, setTab] = useState<Tab>('basics');
 
   /**
    * Applies immediately instead of waiting for "Зберегти".
@@ -129,33 +130,112 @@ export function ProjectPage() {
         </div>
       )}
 
-      <ProjectForm value={form} onChange={setForm} mode={isNew ? 'create' : 'edit'} />
+      {/*
+        Tabs rather than one canvas: a project carries voice, schedule, channel,
+        model chains and its content at once, and scrolling past four of them to
+        reach the fifth is how an operator loses their place.
+      */}
+      {!isNew && (
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'basics', label: 'Огляд' },
+            { value: 'content', label: 'Контент' },
+            { value: 'schedule', label: 'Розклад' },
+            { value: 'generation', label: 'Генерація' },
+            { value: 'telegram', label: 'Telegram' },
+          ]}
+        />
+      )}
 
-      {!isNew && project && <TelegramCard project={project} />}
+      {(isNew || tab === 'basics') && (
+        <>
+          <ProjectForm
+            value={form}
+            onChange={setForm}
+            mode={isNew ? 'create' : 'edit'}
+            section={isNew ? 'all' : 'basics'}
+          />
+          <SaveBar saving={saving} saved={saved} isNew={isNew} onSave={() => void save()} />
+        </>
+      )}
 
-      {!isNew && project && <PostsCard project={project} />}
+      {!isNew && project && tab === 'content' && <ContentTab project={project} />}
 
-      {!isNew && project && <TopicsCard project={project} />}
+      {!isNew && tab === 'schedule' && (
+        <>
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="schedule" />
+          <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
+        </>
+      )}
 
-      {!isNew && project && <GenerationConfig projectId={project.id} />}
+      {!isNew && project && tab === 'generation' && (
+        <>
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="generation" />
+          <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
+          <GenerationConfig projectId={project.id} />
+        </>
+      )}
 
-      <div className="flex items-center gap-3">
-        <Button onClick={() => void save()} disabled={saving}>
-          {saving && <Loader2 className="size-4 animate-spin" />}
-          {isNew ? 'Створити' : 'Зберегти'}
-        </Button>
-        {saved && (
-          <span className="flex items-center gap-1.5 text-sm text-emerald-600">
-            <Check className="size-4" />
-            Збережено
-          </span>
-        )}
-      </div>
-
-      {!isNew && project && <DangerZone project={project} />}
+      {!isNew && project && tab === 'telegram' && (
+        <>
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="telegram" />
+          <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
+          <TelegramCard project={project} />
+          <DangerZone project={project} />
+        </>
+      )}
     </div>
   );
 }
+
+type Tab = 'basics' | 'content' | 'schedule' | 'generation' | 'telegram';
+
+/**
+ * Posts and topics on one screen.
+ *
+ * They looked like duplicates because both are "the list of things this channel
+ * will say". They are not the same thing: a slot is *when* something goes out,
+ * a topic is *what about* — and only the slots have a deadline. So the slots
+ * come first and the bank sits under them as their supply.
+ */
+function ContentTab({ project }: { project: ProjectDto }) {
+  return (
+    <div className="space-y-6">
+      <PostsCard project={project} />
+      <TopicsCard project={project} />
+    </div>
+  );
+}
+
+function SaveBar({
+  saving,
+  saved,
+  isNew,
+  onSave,
+}: {
+  saving: boolean;
+  saved: boolean;
+  isNew: boolean;
+  onSave: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <Button onClick={onSave} disabled={saving}>
+        {saving && <Loader2 className="size-4 animate-spin" />}
+        {isNew ? 'Створити' : 'Зберегти'}
+      </Button>
+      {saved && (
+        <span className="flex items-center gap-1.5 text-sm text-emerald-600">
+          <Check className="size-4" />
+          Збережено
+        </span>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * Verification is a separate action rather than part of save: it makes live

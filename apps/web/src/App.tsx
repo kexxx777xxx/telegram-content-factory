@@ -1,4 +1,4 @@
-import { AlertTriangle, Database, LayoutGrid, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, LayoutGrid, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import type { Health } from '@tcf/shared';
@@ -49,6 +49,7 @@ export function App() {
     <BrowserRouter>
       <div className="flex min-h-full flex-col">
         {session && !session.authEnabled && <AuthDisabledBanner />}
+        {health && health.database !== 'up' && <DatabaseDownBanner />}
 
         <header className="border-b border-slate-200 bg-white">
           <div className="mx-auto flex max-w-5xl items-center gap-3 px-6 py-4">
@@ -65,7 +66,6 @@ export function App() {
                 <SlidersHorizontal className="size-4" />
                 Налаштування
               </Link>
-              <DatabaseBadge health={health} />
               {session?.authEnabled && (
                 <button
                   type="button"
@@ -104,20 +104,18 @@ function AuthDisabledBanner() {
 }
 
 /**
- * Icon only. A healthy database is the expected state and does not deserve a
- * permanent sentence in the header; the label lives in the tooltip, and the
- * colour is what carries the signal when it stops being healthy.
+ * Shown only when the database is actually down.
+ *
+ * A permanent indicator for the normal state is noise: it occupies attention
+ * every day to tell you nothing, and by the time it does mean something the eye
+ * has learned to skip it. Silence is the healthy signal.
  */
-function DatabaseBadge({ health }: { health: Health | null }) {
-  const up = health?.database === 'up';
-  const label = up ? 'База підключена' : 'База недоступна';
+function DatabaseDownBanner() {
   return (
-    <span
-      title={label}
-      aria-label={label}
-      className={up ? 'text-slate-400' : 'text-red-600'}
-    >
-      <Database className="size-4" />
-    </span>
+    <div className="flex items-center justify-center gap-2 bg-red-600 px-4 py-2 text-sm font-medium text-white">
+      <AlertTriangle className="size-4 shrink-0" />
+      База даних недоступна. Планувальник, черга й публікації зупинені, доки зʼєднання не
+      відновиться.
+    </div>
   );
 }

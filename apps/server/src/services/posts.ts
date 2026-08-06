@@ -79,6 +79,7 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
     const result = await runChain({
       action: 'post_text',
       projectId: project.id,
+      postId: post.id,
       variables: {
         topic: topic.title,
         persona: project.persona,

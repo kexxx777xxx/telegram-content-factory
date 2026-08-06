@@ -6,6 +6,7 @@ import {
   apiKeys,
   jobs,
   modelChains,
+  postLogs,
   posts,
   projects,
   prompts,
@@ -18,6 +19,7 @@ import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
 import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
+import { listPostLogs, logSwitches, pruneLogs } from '../src/services/postLog.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
 
@@ -30,7 +32,7 @@ import { insertTopics, needsReplenish, topicCounts } from '../src/services/topic
 async function reset(): Promise<void> {
   assertTestDatabase();
   await db.execute(
-    sql`truncate ${jobs}, ${posts}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
+    sql`truncate ${jobs}, ${posts}, ${postLogs}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
   );
 }
 
@@ -217,6 +219,48 @@ describe('rate limiting', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.retryAt.getTime()).toBe(until.getTime());
+  });
+});
+
+describe('post log', () => {
+  it('respects the project switches', async () => {
+    const off = await makeProject();
+    const on = await makeProject({ logRequests: true, logResponses: false });
+
+    expect(await logSwitches(off.id)).toEqual({ requests: false, responses: false });
+    expect(await logSwitches(on.id)).toEqual({ requests: true, responses: false });
+  });
+
+  it('drops entries past the project retention, keeping fresher ones', async () => {
+    const project = await makeProject({ logRetentionDays: 1 });
+    const [post] = await db
+      .insert(posts)
+      .values({ projectId: project.id, scheduledAt: new Date(), status: 'planned' })
+      .returning({ id: posts.id });
+
+    await db.insert(postLogs).values([
+      {
+        postId: post!.id,
+        projectId: project.id,
+        action: 'post_text',
+        model: 'm',
+        phase: 'request',
+        content: 'старий',
+        createdAt: new Date(Date.now() - 3 * 24 * 3600_000),
+      },
+      {
+        postId: post!.id,
+        projectId: project.id,
+        action: 'post_text',
+        model: 'm',
+        phase: 'response',
+        content: 'свіжий',
+      },
+    ]);
+
+    expect(await pruneLogs()).toBe(1);
+    const left = await listPostLogs(post!.id);
+    expect(left.map((e) => e.content)).toEqual(['свіжий']);
   });
 });
 

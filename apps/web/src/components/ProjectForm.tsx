@@ -2,7 +2,7 @@ import type { ApiKeyDto, ProjectDto, ProjectInput, ProjectUpdate, Schedule } fro
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
-import { Card, Field, Input, Notice, Select, Textarea } from './ui';
+import { Card, Field, Input, Notice, Select, Textarea, VarTag } from './ui';
 
 export interface ProjectFormValue {
   name: string;
@@ -22,6 +22,9 @@ export interface ProjectFormValue {
   topicsBufferMin: number;
   leadTimeMinutes: number;
   missPolicy: ProjectInput['missPolicy'];
+  logRequests: boolean;
+  logResponses: boolean;
+  logRetentionDays: number;
   schedule: Schedule;
 }
 
@@ -44,6 +47,9 @@ export function emptyForm(): ProjectFormValue {
     topicsBufferMin: 10,
     leadTimeMinutes: 180,
     missPolicy: 'publish_late',
+    logRequests: false,
+    logResponses: false,
+    logRetentionDays: 7,
     schedule: { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] },
   };
 }
@@ -68,6 +74,9 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     topicsBufferMin: project.topicsBufferMin,
     leadTimeMinutes: project.leadTimeMinutes,
     missPolicy: project.missPolicy,
+    logRequests: project.logRequests,
+    logResponses: project.logResponses,
+    logRetentionDays: project.logRetentionDays,
     schedule: project.schedule,
   };
 }
@@ -113,8 +122,21 @@ function common(form: ProjectFormValue) {
     topicsBufferMin: form.topicsBufferMin,
     leadTimeMinutes: form.leadTimeMinutes,
     missPolicy: form.missPolicy,
-    schedule: form.schedule,
+    logRequests: form.logRequests,
+    logResponses: form.logResponses,
+    logRetentionDays: form.logRetentionDays,
+    schedule: sortSchedule(form.schedule),
   };
+}
+
+/**
+ * Slots are stored in the order the operator typed them, which turns into
+ * `09:00, 18:00, 12:00` the moment one is added. Sorting on save is enough:
+ * reordering while typing would move the field out from under the cursor.
+ */
+function sortSchedule(schedule: Schedule): Schedule {
+  if (schedule.mode !== 'slots') return schedule;
+  return { ...schedule, slots: [...schedule.slots].sort() };
 }
 
 function slugify(name: string): string {
@@ -142,14 +164,19 @@ const TIMEZONES = (() => {
   }
 })();
 
+export type ProjectFormSection = 'basics' | 'schedule' | 'generation' | 'telegram' | 'all';
+
 export function ProjectForm({
   value,
   onChange,
   mode,
+  section = 'all',
 }: {
   value: ProjectFormValue;
   onChange: (next: ProjectFormValue) => void;
   mode: 'create' | 'edit';
+  /** Which cards to render; the project page shows one group per tab. */
+  section?: ProjectFormSection;
 }) {
   const [slugTouched, setSlugTouched] = useState(mode === 'edit');
   const [keys, setKeys] = useState<ApiKeyDto[]>([]);
@@ -160,8 +187,12 @@ export function ProjectForm({
   const set = <K extends keyof ProjectFormValue>(key: K, next: ProjectFormValue[K]) =>
     onChange({ ...value, [key]: next });
 
+  const shows = (name: Exclude<ProjectFormSection, 'all'>) =>
+    section === 'all' || section === name;
+
   return (
     <div className="space-y-6">
+      {shows('basics') && (
       <Card title="Основне">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Назва">
@@ -207,12 +238,21 @@ export function ProjectForm({
           </Field>
         </div>
       </Card>
+      )}
 
-      <Card title="Голос каналу" hint="Підставляється в кожен промпт генерації тексту.">
+      {shows('basics') && (
+      <Card
+        title="Голос каналу"
+        hint="Ці поля підставляються в промпти під показаними назвами змінних."
+      >
         <div className="space-y-4">
           <Field
             label="Персона"
-            hint="Хто пише і як. Наприклад: досвідчений системний архітектор, колегіальний тон, без води."
+            hint={
+              <>
+                Хто пише і як. Підставляється як <VarTag name="persona" />.
+              </>
+            }
           >
             <Textarea
               rows={4}
@@ -222,10 +262,24 @@ export function ProjectForm({
           </Field>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Мова" hint="Код мови, напр. uk.">
+            <Field
+              label="Мова"
+              hint={
+                <>
+                  Код мови, напр. uk. Підставляється як <VarTag name="language" />.
+                </>
+              }
+            >
               <Input value={value.language} onChange={(e) => set('language', e.target.value)} />
             </Field>
-            <Field label="Хештеги" hint="Через кому. Решітка не обовʼязкова.">
+            <Field
+              label="Хештеги"
+              hint={
+                <>
+                  Через кому, решітка не обовʼязкова. Підставляється як <VarTag name="hashtags" />.
+                </>
+              }
+            >
               <Input
                 value={value.hashtags}
                 placeholder="архітектура, мікросервіси"
@@ -235,7 +289,9 @@ export function ProjectForm({
           </div>
         </div>
       </Card>
+      )}
 
+      {shows('telegram') && (
       <Card title="Telegram">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Канал" hint="@username каналу або числовий -100… id.">
@@ -275,15 +331,19 @@ export function ProjectForm({
           </Field>
         </div>
       </Card>
+      )}
 
-      <Card title="Розклад">
+      {shows('schedule') && (
+      <Card title="Розклад" hint="Час у поясі проєкту. Після збереження слоти сортуються.">
         <ScheduleEditor
           value={value.schedule}
           timezone={value.timezone}
           onChange={(schedule) => set('schedule', schedule)}
         />
       </Card>
+      )}
 
+      {shows('generation') && (
       <Card title="Генерація">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -384,6 +444,72 @@ export function ProjectForm({
           )}
         </div>
       </Card>
+      )}
+
+      {shows('generation') && (
+      <Card
+        title="Лог генерації"
+        hint="Що саме пішло в модель і що вона відповіла — для кожного поста окремо."
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={value.logRequests}
+                onChange={(e) => set('logRequests', e.target.checked)}
+                className="mt-0.5 size-4 rounded border-slate-300"
+              />
+              <span>
+                Логувати <strong>запити</strong>
+                <span className="block text-xs text-slate-500">
+                  Готовий промпт після підстановки змінних — те, що дозволяє зрозуміти, чому модель
+                  відповіла саме так.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={value.logResponses}
+                onChange={(e) => set('logResponses', e.target.checked)}
+                className="mt-0.5 size-4 rounded border-slate-300"
+              />
+              <span>
+                Логувати <strong>відповіді</strong>
+                <span className="block text-xs text-slate-500">
+                  Сира відповідь моделі до санітайзера. Помилки записуються, якщо ввімкнено
+                  будь-який із двох перемикачів.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <Field
+            label="Зберігати днів"
+            hint="Старші записи прибирає щоденний prune. Самі пости це не чіпає."
+          >
+            <Input
+              type="number"
+              min={1}
+              max={365}
+              className="max-w-32"
+              value={value.logRetentionDays}
+              onChange={(e) =>
+                set('logRetentionDays', Math.min(365, Math.max(1, Number(e.target.value) || 1)))
+              }
+            />
+          </Field>
+
+          <Notice>
+            Зображення в лог <strong>не потрапляють</strong> — лише рядок про те, яка модель
+            малювала й скільки важить результат. Текст промптів і відповідей лежить у базі, доки не
+            мине строк зберігання.
+          </Notice>
+        </div>
+      </Card>
+      )}
     </div>
   );
 }

@@ -141,6 +141,27 @@ export async function ensureJitSlots(): Promise<number> {
   return created;
 }
 
+/**
+ * Posts stuck in `generating` after their worker died.
+ *
+ * Generation refuses to start from `generating`, so without this the slot is
+ * permanently frozen: the job is reclaimed and re-run, sees a status it may not
+ * start from, reports "skipped", and the post never becomes anything. Found the
+ * hard way — a Rust panic in the SVG renderer aborted the process mid-generation
+ * and left the post that way.
+ */
+export async function reclaimStuckGenerating(olderThanMs: number): Promise<number> {
+  const cutoff = new Date(Date.now() - olderThanMs);
+  const rows = await db
+    .update(posts)
+    .set({ status: 'planned', updatedAt: new Date() })
+    .where(and(eq(posts.status, 'generating'), sql`${posts.updatedAt} < ${cutoff}`))
+    .returning({ id: posts.id });
+
+  if (rows.length > 0) logger.warn({ count: rows.length }, 'reclaimed posts stuck in generating');
+  return rows.length;
+}
+
 /** Posts sitting in `publishing` longer than any send could take. */
 export async function reclaimStuckPublishing(olderThanMs: number): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs);

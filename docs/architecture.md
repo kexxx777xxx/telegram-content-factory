@@ -119,6 +119,7 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 | `model_chains` / `model_chain_steps` | ланцюжки моделей на дію |
 | `topics` | банк тем, дедуп за `normalized_hash` |
 | `posts` | слот + вміст (поки в буфері) + permalink (після публікації) |
+| `post_logs` | промпти й відповіді моделей на пост; вмикається в проєкті, чиститься за строком |
 | `jobs` | черга з `dedupe_key` та `SKIP LOCKED` |
 | `rate_limit_state` | bucket + breaker на `(ключ, модель)` |
 | `events` | аудит із ретеншном |

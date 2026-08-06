@@ -1,4 +1,4 @@
-import type { PostDto, PostsPage, ProjectDto } from '@tcf/shared';
+import type { PostDto, PostLogEntry, PostsPage, ProjectDto } from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -11,17 +11,59 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
-import { Badge, Button, Card, Notice, Textarea } from './ui';
+import { Badge, Button, Card, Notice, Spoiler, Textarea } from './ui';
 
-const STATUS_LABEL: Record<string, { text: string; tone: 'neutral' | 'green' | 'amber' | 'red' }> = {
-  planned: { text: 'заплановано', tone: 'neutral' },
-  generating: { text: 'генерується', tone: 'amber' },
-  ready: { text: 'готовий', tone: 'green' },
-  awaiting_approval: { text: 'чекає апруву', tone: 'amber' },
-  publishing: { text: 'публікується', tone: 'amber' },
-  published: { text: 'опубліковано', tone: 'green' },
-  failed: { text: 'помилка', tone: 'red' },
-  skipped: { text: 'пропущено', tone: 'neutral' },
+/**
+ * Status vocabulary in one place.
+ *
+ * The hint is not decoration: «заплановано» and «генерується» look alike from
+ * outside, and the difference — whether a model has been asked anything yet —
+ * decides whether waiting is the right response.
+ */
+const STATUS: Record<
+  string,
+  { text: string; tone: 'neutral' | 'green' | 'amber' | 'red'; hint: string }
+> = {
+  planned: {
+    text: 'заплановано',
+    tone: 'neutral',
+    hint: 'Слот заброньовано, до моделі ще ніхто не звертався. Генерація стартує за lead time до публікації.',
+  },
+  generating: {
+    text: 'генерується',
+    tone: 'amber',
+    hint: 'Просто зараз працює модель: спершу текст, потім ілюстрація.',
+  },
+  ready: {
+    text: 'готовий',
+    tone: 'green',
+    hint: 'Текст і зображення лежать у буфері. Публікація — в момент слоту, без жодного виклику моделі.',
+  },
+  awaiting_approval: {
+    text: 'чекає апруву',
+    tone: 'amber',
+    hint: 'Готовий, але проєкт вимагає підтвердження — картка пішла в адмін-чат.',
+  },
+  publishing: {
+    text: 'публікується',
+    tone: 'amber',
+    hint: 'Відправляється в Telegram просто зараз.',
+  },
+  published: {
+    text: 'опубліковано',
+    tone: 'green',
+    hint: 'Пост у каналі. Локальні текст і зображення стерто, лишився лінк.',
+  },
+  failed: {
+    text: 'помилка',
+    tone: 'red',
+    hint: 'Спроби вичерпано. Причина — нижче; після виправлення пост можна перегенерувати.',
+  },
+  skipped: {
+    text: 'пропущено',
+    tone: 'neutral',
+    hint: 'Пост не встиг до кінця grace-вікна, а проєкт налаштовано такі слоти пропускати.',
+  },
 };
 
 /** Telegram truncates a photo caption here; longer text needs a second message. */
@@ -46,17 +88,21 @@ export function PostsCard({ project }: { project: ProjectDto }) {
       title="Пости"
       hint={
         project.postsBuffer === 0
-          ? 'Буфер вимкнено: пост готується в момент слоту.'
-          : `Планувальник тримає ${project.postsBuffer} слот(и) наперед; генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
+          ? 'Слоти календаря: коли саме вийде пост і в якому він стані. Буфер вимкнено — пост готується в момент слоту.'
+          : `Слоти календаря: коли саме вийде пост і в якому він стані. Планувальник тримає ${project.postsBuffer} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
       }
     >
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-3">
           {page &&
             Object.entries(page.counts).map(([status, count]) => (
-              <span key={status} className="flex items-center gap-1.5 text-sm">
-                <Badge tone={STATUS_LABEL[status]?.tone ?? 'neutral'}>
-                  {STATUS_LABEL[status]?.text ?? status}
+              <span
+                key={status}
+                title={STATUS[status]?.hint}
+                className="flex cursor-help items-center gap-1.5 text-sm"
+              >
+                <Badge tone={STATUS[status]?.tone ?? 'neutral'}>
+                  {STATUS[status]?.text ?? status}
                 </Badge>
                 <strong>{count}</strong>
               </span>
@@ -89,7 +135,7 @@ export function PostsCard({ project }: { project: ProjectDto }) {
               <PostRow
                 key={post.id}
                 post={post}
-                timezone={project.timezone}
+                project={project}
                 expanded={openId === post.id}
                 onToggle={() => setOpenId(openId === post.id ? null : post.id)}
                 onChanged={() => void reload()}
@@ -104,13 +150,13 @@ export function PostsCard({ project }: { project: ProjectDto }) {
 
 function PostRow({
   post,
-  timezone,
+  project,
   expanded,
   onToggle,
   onChanged,
 }: {
   post: PostDto;
-  timezone: string;
+  project: ProjectDto;
   expanded: boolean;
   onToggle: () => void;
   onChanged: () => void;
@@ -124,9 +170,9 @@ function PostRow({
     setSaved(false);
   }, [post.textHtml]);
 
-  const label = STATUS_LABEL[post.status] ?? { text: post.status, tone: 'neutral' as const };
+  const label = STATUS[post.status] ?? { text: post.status, tone: 'neutral' as const, hint: '' };
   const slot = new Date(post.scheduledAt).toLocaleString('uk-UA', {
-    timeZone: timezone,
+    timeZone: project.timezone,
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -159,20 +205,23 @@ function PostRow({
 
   return (
     <div className="rounded-lg border border-slate-200">
+      {/*
+        The row carries only what is needed every time: state, when, what about,
+        and the link. Model names and sanitiser notes matter while debugging one
+        post, so they moved into the expanded area rather than onto every line.
+      */}
       <button
         type="button"
         onClick={onToggle}
         className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
       >
-        <Badge tone={label.tone}>{label.text}</Badge>
+        <span title={label.hint}>
+          <Badge tone={label.tone}>{label.text}</Badge>
+        </span>
         <span className="font-mono text-xs text-slate-500">{slot}</span>
         <span className="min-w-0 flex-1 truncate text-sm">
           {post.topicTitle ?? <span className="text-slate-400">тему ще не обрано</span>}
         </span>
-        {post.generation.model && (
-          <span className="text-xs text-slate-400">{post.generation.model}</span>
-        )}
-        {post.imageKind === 'svg_fallback' && <Badge tone="amber">резервна схема</Badge>}
         {post.permalink && (
           <a
             href={post.permalink}
@@ -189,6 +238,8 @@ function PostRow({
 
       {expanded && (
         <div className="space-y-3 border-t border-slate-200 px-4 py-4">
+          <p className="text-xs text-slate-500">{label.hint}</p>
+
           {post.error && (
             <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -197,20 +248,11 @@ function PostRow({
           )}
 
           {post.hasImage && (
-            <div className="space-y-1.5">
-              <img
-                src={`/api/posts/${post.id}/image?v=${encodeURIComponent(post.updatedAt)}`}
-                alt=""
-                className="w-full rounded-lg border border-slate-200"
-              />
-              <p className="text-xs text-slate-500">
-                {post.imageKind === 'svg_fallback'
-                  ? 'Резервна схема — модель не дала валідного SVG'
-                  : post.imageKind === 'image_model'
-                    ? 'Згенеровано image-моделлю'
-                    : 'SVG-схема від моделі'}
-              </p>
-            </div>
+            <img
+              src={`/api/posts/${post.id}/image?v=${encodeURIComponent(post.updatedAt)}`}
+              alt=""
+              className="w-full rounded-lg border border-slate-200"
+            />
           )}
 
           {post.status === 'published' ? (
@@ -227,22 +269,42 @@ function PostRow({
                 onChange={(e) => setDraft(e.target.value)}
                 className="font-mono text-xs"
               />
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <span className={overCaption ? 'text-amber-600' : 'text-slate-500'}>
-                  {length} символів
-                  {overCaption && ` — понад ${CAPTION_LIMIT}, піде окремим повідомленням під фото`}
-                </span>
-                {post.generation.removedTags.length > 0 && (
-                  <span className="text-slate-500">
-                    санітайзер прибрав: {post.generation.removedTags.join(', ')}
-                  </span>
-                )}
-              </div>
+              <p className={`text-xs ${overCaption ? 'text-amber-600' : 'text-slate-500'}`}>
+                {length} символів
+                {overCaption && ` — понад ${CAPTION_LIMIT}, піде окремим повідомленням під фото`}
+              </p>
             </>
           )}
 
+          <Spoiler label="Як це згенеровано">
+            <dl className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[11rem_1fr]">
+              <dt className="text-slate-500">Модель тексту</dt>
+              <dd>{post.generation.model ?? '—'}</dd>
+              <dt className="text-slate-500">Версія промпта</dt>
+              <dd>{post.generation.promptVersion ?? '—'}</dd>
+              <dt className="text-slate-500">Ілюстрація</dt>
+              <dd>{describeImage(post.imageKind)}</dd>
+              {post.generation.removedTags.length > 0 && (
+                <>
+                  <dt className="text-slate-500">Санітайзер прибрав</dt>
+                  <dd>{post.generation.removedTags.join(', ')}</dd>
+                </>
+              )}
+              <dt className="text-slate-500">Згенеровано</dt>
+              <dd>
+                {post.generation.generatedAt
+                  ? new Date(post.generation.generatedAt).toLocaleString('uk-UA', {
+                      timeZone: project.timezone,
+                    })
+                  : '—'}
+              </dd>
+            </dl>
+          </Spoiler>
+
+          <PostLog post={post} project={project} />
+
           {post.status !== 'published' && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {post.textHtml !== null && (
                 <Button onClick={() => void save()} disabled={busy || draft === post.textHtml}>
                   {busy ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -278,6 +340,97 @@ function PostRow({
         </div>
       )}
     </div>
+  );
+}
+
+function describeImage(kind: string | null): string {
+  switch (kind) {
+    case 'svg_fallback':
+      return 'резервна схема — модель не дала валідного SVG';
+    case 'image_model':
+      return 'намальовано image-моделлю';
+    case 'svg':
+      return 'SVG-схема від моделі';
+    default:
+      return '—';
+  }
+}
+
+const PHASE_LABEL: Record<string, string> = {
+  request: 'запит',
+  response: 'відповідь',
+  note: 'примітка',
+};
+
+/**
+ * Loaded only when opened: the log is the bulkiest thing on the screen and most
+ * of the time nobody looks at it.
+ */
+function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
+  const [entries, setEntries] = useState<PostLogEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const off = !project.logRequests && !project.logResponses;
+
+  async function load() {
+    if (entries || loading) return;
+    setLoading(true);
+    try {
+      setEntries(await api.postLogs(post.id));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <details
+      className="group rounded-lg border border-slate-200 bg-slate-50"
+      onToggle={(e) => {
+        if (e.currentTarget.open) void load();
+      }}
+    >
+      <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900">
+        <span className="inline-block transition group-open:rotate-90">▸</span> Лог запитів до
+        моделей
+        {off && <span className="ml-2 font-normal text-slate-400">(вимкнено в проєкті)</span>}
+      </summary>
+      <div className="space-y-2 border-t border-slate-200 px-3 py-3">
+        {loading && <Loader2 className="size-4 animate-spin text-slate-400" />}
+        {entries && entries.length === 0 && (
+          <p className="text-xs text-slate-500">
+            {off
+              ? 'Лог для цього проєкту вимкнено. Увімкніть його на вкладці «Огляд» — наступна генерація запише сюди промпти й відповіді.'
+              : 'Записів немає: пост ще не генерувався після вмикання логу.'}
+          </p>
+        )}
+        {entries?.map((entry) => (
+          <div key={entry.id} className="rounded-lg border border-slate-200 bg-white">
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+              <Badge tone={entry.ok ? (entry.phase === 'request' ? 'neutral' : 'green') : 'red'}>
+                {PHASE_LABEL[entry.phase] ?? entry.phase}
+              </Badge>
+              <span>{entry.action}</span>
+              <span className="font-mono">{entry.model}</span>
+              {entry.keyLabel && <span>ключ: {entry.keyLabel}</span>}
+              {entry.durationMs !== null && <span>{entry.durationMs} мс</span>}
+              {entry.inputTokens !== null && (
+                <span>
+                  {entry.inputTokens}→{entry.outputTokens} токенів
+                </span>
+              )}
+              <span className="ml-auto">
+                {new Date(entry.createdAt).toLocaleTimeString('uk-UA', {
+                  timeZone: project.timezone,
+                })}
+              </span>
+            </div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-700">
+              {entry.content}
+            </pre>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

@@ -126,6 +126,28 @@ docker compose exec -T db psql -U tcf -d tcf -c "select type, status, count(*) f
 docker compose exec -T app printenv ADMIN_PASSWORD_HASH
 ```
 
+**Сервер зник без сліду під час генерації.** Найімовірніше — паніка в нативному рендерері SVG:
+модель віддала схему з фільтром (`feDisplacementMap` та подібні), resvg зробив assert у Rust, а
+паніка в аддоні вбиває процес Node цілком. Санітайзер вирізає фільтри саме тому. У логах це
+виглядає як `thread '<unnamed>' panicked` і `fatal runtime error` без жодного стектрейсу Node.
+
+**Пост завис у `generating`.** Воркер помер посеред генерації. Публікація його не візьме, а
+генерація відмовиться стартувати з цього статусу. Publisher tick повертає такі пости в `planned`
+через 20 хвилин; вручну:
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -c "update posts set status='planned' where status='generating' and updated_at < now() - interval '20 minutes';"
+```
+
+**Лог поста розрісся.** Він вмикається на проєкт і зберігає повні промпти й відповіді. Розмір:
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -c "select p.name, count(*), pg_size_pretty(sum(length(l.content))::bigint) from post_logs l join projects p on p.id=l.project_id group by 1;"
+```
+
+Прибирається щоденним `prune` за `log_retention_days` проєкту; вимикається перемикачами на
+вкладці «Генерація».
+
 **Застрягла джоба в `running`.** Воркер помер, не знявши лок. Перевірити `locked_at`; джоби,
 старші за таймаут, підбирає reaper (фаза 4).
 

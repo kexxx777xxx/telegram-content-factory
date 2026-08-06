@@ -28,7 +28,37 @@ const FORBIDDEN_ELEMENTS = new Set([
   'handler',
   'use', // can reference external documents
   'image', // raster payloads have no place in a vector schematic
+
+  /*
+   * Filters are removed because of what they do to the *renderer*, not to the
+   * browser. A model emitted a `<feDisplacementMap>` whose source and map had
+   * different sizes; resvg asserts on that in Rust, and a Rust panic inside a
+   * native addon aborts the whole Node process — one malformed schematic took
+   * the server down, queue and all. Filters add nothing to a flat schematic,
+   * so the cheap fix is also the right one.
+   */
+  'filter',
+  'fedisplacementmap',
+  'fegaussianblur',
+  'feturbulence',
+  'feimage',
+  'femorphology',
+  'feconvolvematrix',
+  'fedropshadow',
+  'feblend',
+  'fecolormatrix',
+  'fecomposite',
+  'feflood',
+  'feoffset',
+  'fetile',
+  'fediffuselighting',
+  'fespecularlighting',
+  'fecomponenttransfer',
+  'femerge',
 ]);
+
+/** Attributes that point at a filter; dropped with the filters themselves. */
+const FORBIDDEN_ATTRS = new Set(['filter']);
 
 /** The no-text rule from the PRD, enforced structurally. */
 const TEXT_ELEMENTS = new Set(['text', 'tspan', 'textpath', 'tref', 'altglyph']);
@@ -178,6 +208,12 @@ function sanitizeAttributes(record: Record<string, unknown>, removed: Set<string
   for (const key of Object.keys(attrs as Record<string, unknown>)) {
     const name = key.slice(ATTR_PREFIX.length).toLowerCase();
     const value = String((attrs as Record<string, unknown>)[key] ?? '');
+
+    if (FORBIDDEN_ATTRS.has(name)) {
+      delete (attrs as Record<string, unknown>)[key];
+      removed.add(`@${name}`);
+      continue;
+    }
 
     if (name.startsWith('on')) {
       delete (attrs as Record<string, unknown>)[key];

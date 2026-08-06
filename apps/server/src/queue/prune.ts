@@ -3,11 +3,13 @@ import { config } from '../config.js';
 import { db } from '../db/client.js';
 import { events, jobs, posts } from '../db/schema.js';
 import { sweepStaging } from '../media/staging.js';
+import { pruneLogs } from '../services/postLog.js';
 
 export interface PruneReport {
   events: number;
   jobs: number;
   postTexts: number;
+  postLogs: number;
   stagingOrphans: number;
 }
 
@@ -52,6 +54,9 @@ export async function runPrune(): Promise<PruneReport> {
     prunedTexts = cleared.length;
   }
 
+  // Retention here is per project, so the cutoff lives with the log itself.
+  const prunedLogs = await pruneLogs();
+
   // Files whose post row vanished mid-generation; the directory is bounded on
   // paper only if something actually removes them.
   const staging = await sweepStaging();
@@ -60,6 +65,7 @@ export async function runPrune(): Promise<PruneReport> {
     events: prunedEvents.length,
     jobs: prunedJobs.length,
     postTexts: prunedTexts,
+    postLogs: prunedLogs,
     stagingOrphans: staging.orphansRemoved,
   };
 }

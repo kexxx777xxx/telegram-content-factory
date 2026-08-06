@@ -15,6 +15,7 @@ import {
   updatePostText,
   type GenerationMeta,
 } from '../../services/posts.js';
+import { listPostLogs } from '../../services/postLog.js';
 import { launchPost, NotLaunchableError } from '../../services/publishNow.js';
 import { badRequest, firstIssue } from './helpers.js';
 
@@ -86,6 +87,14 @@ postsRouter.get('/posts/:postId/image', async (req, res) => {
   res.type('image/png');
   res.setHeader('Cache-Control', 'private, max-age=60');
   createReadStream(post.imagePath!).pipe(res);
+});
+
+/** The post's own log: what was asked of each model and what came back. */
+postsRouter.get('/posts/:postId/logs', async (req, res) => {
+  const params = postParam.safeParse(req.params);
+  if (!params.success) return badRequest(res, firstIssue(params.error));
+
+  res.json(await listPostLogs(params.data.postId));
 });
 
 postsRouter.get('/posts/:postId', async (req, res) => {

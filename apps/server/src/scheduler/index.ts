@@ -3,7 +3,12 @@ import { logger } from '../logger.js';
 import { workerPool } from '../queue/worker.js';
 import { startAdminBot, stopAdminBot } from '../telegram/adminBot.js';
 import { planTick } from './planner.js';
-import { ensureJitSlots, publisherTick, reclaimStuckPublishing } from './publisher.js';
+import {
+  ensureJitSlots,
+  publisherTick,
+  reclaimStuckGenerating,
+  reclaimStuckPublishing,
+} from './publisher.js';
 
 /**
  * Owns the periodic loops. Kept separate from the HTTP layer so a deployment
@@ -16,6 +21,13 @@ let running = false;
 
 /** A send cannot plausibly take this long; anything older lost its worker. */
 const STUCK_PUBLISHING_MS = 10 * 60_000;
+
+/**
+ * Generation is slower than a send — an SVG alone gets two minutes — so the
+ * window is wider. It still has to be finite: a post frozen in `generating`
+ * never publishes and never fails.
+ */
+const STUCK_GENERATING_MS = 20 * 60_000;
 
 async function safePlanTick(): Promise<void> {
   try {
@@ -31,6 +43,7 @@ async function safePlanTick(): Promise<void> {
 async function safePublisherTick(): Promise<void> {
   try {
     await reclaimStuckPublishing(STUCK_PUBLISHING_MS);
+    await reclaimStuckGenerating(STUCK_GENERATING_MS);
     await ensureJitSlots();
     const report = await publisherTick();
     if (report.queued > 0 || report.skipped > 0 || report.jit > 0) {

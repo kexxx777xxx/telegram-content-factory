@@ -5,6 +5,7 @@ import {
   KEY_LEVELS,
   IMAGE_MODES,
   MISS_POLICIES,
+  POST_LOG_PHASES,
   POST_STATUSES,
   PROJECT_STATUSES,
   PROMPT_SCOPES,
@@ -101,6 +102,11 @@ const projectFields = {
   leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60),
   missPolicy: z.enum(MISS_POLICIES),
 
+  /** Post log switches; off by default (prompts and output are bulky). */
+  logRequests: z.boolean(),
+  logResponses: z.boolean(),
+  logRetentionDays: z.number().int().min(1).max(365),
+
   schedule: scheduleSchema,
 } as const;
 
@@ -120,6 +126,9 @@ export const projectInputSchema = z.object({
   topicsBufferMin: projectFields.topicsBufferMin.default(10),
   leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
   missPolicy: projectFields.missPolicy.default('publish_late'),
+  logRequests: projectFields.logRequests.default(false),
+  logResponses: projectFields.logResponses.default(false),
+  logRetentionDays: projectFields.logRetentionDays.default(7),
   schedule: projectFields.schedule.default(defaultSchedule),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
@@ -169,6 +178,9 @@ export const projectDtoSchema = z.object({
   topicsBufferMin: z.number().int(),
   leadTimeMinutes: z.number().int(),
   missPolicy: z.enum(MISS_POLICIES),
+  logRequests: z.boolean(),
+  logResponses: z.boolean(),
+  logRetentionDays: z.number().int(),
   schedule: scheduleSchema,
 
   createdAt: z.string(),
@@ -356,6 +368,23 @@ export const dryRunResultSchema = z.object({
   renderedPrompt: z.string().nullable(),
 });
 export type DryRunResult = z.infer<typeof dryRunResultSchema>;
+
+/* ── post log ─────────────────────────────────────────────────────────────── */
+
+export const postLogEntrySchema = z.object({
+  id: z.string().uuid(),
+  action: z.enum(AI_ACTIONS),
+  model: z.string(),
+  keyLabel: z.string().nullable(),
+  phase: z.enum(POST_LOG_PHASES),
+  content: z.string(),
+  inputTokens: z.number().int().nullable(),
+  outputTokens: z.number().int().nullable(),
+  durationMs: z.number().int().nullable(),
+  ok: z.boolean(),
+  createdAt: z.string(),
+});
+export type PostLogEntry = z.infer<typeof postLogEntrySchema>;
 
 /* ── topics ───────────────────────────────────────────────────────────────── */
 

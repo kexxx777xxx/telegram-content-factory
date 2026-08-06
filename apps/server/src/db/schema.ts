@@ -5,6 +5,7 @@ import {
   JOB_STATUSES,
   JOB_TYPES,
   MISS_POLICIES,
+  POST_LOG_PHASES,
   POST_STATUSES,
   PROJECT_STATUSES,
   PROMPT_SCOPES,
@@ -42,6 +43,7 @@ export const aiProviderEnum = pgEnum('ai_provider', AI_PROVIDERS);
 export const promptScopeEnum = pgEnum('prompt_scope', PROMPT_SCOPES);
 export const jobStatusEnum = pgEnum('job_status', JOB_STATUSES);
 export const jobTypeEnum = pgEnum('job_type', JOB_TYPES);
+export const postLogPhaseEnum = pgEnum('post_log_phase', POST_LOG_PHASES);
 
 const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
@@ -87,6 +89,15 @@ export const projects = pgTable(
     topicsBufferMin: integer('topics_buffer_min').notNull().default(10),
     leadTimeMinutes: integer('lead_time_minutes').notNull().default(180),
     missPolicy: missPolicyEnum('miss_policy').notNull().default('publish_late'),
+
+    /**
+     * Post log switches. Off by default: the log holds full prompts and model
+     * output, which is exactly what nobody wants accumulating unasked.
+     */
+    logRequests: boolean('log_requests').notNull().default(false),
+    logResponses: boolean('log_responses').notNull().default(false),
+    /** Days the log is kept; `prune` deletes older rows. */
+    logRetentionDays: integer('log_retention_days').notNull().default(7),
 
     /** Discriminated union validated by `scheduleSchema` in @tcf/shared. */
     schedule: jsonb('schedule').notNull(),
@@ -370,6 +381,46 @@ export const events = pgTable(
   (t) => [index('events_recent_idx').on(t.createdAt), index('events_project_idx').on(t.projectId, t.kind)],
 );
 
+/* ── post log ─────────────────────────────────────────────────────────────── */
+
+/**
+ * What was asked of a model and what came back, per post.
+ *
+ * Deliberately a separate table from `events`: this one holds bulky text that a
+ * project opts into and that `prune` deletes on its own schedule, while events
+ * are small and always on. Image bytes are never written here — only which
+ * model drew, how big the result was and whether the fallback fired. Storing
+ * renders would rebuild the local image archive that ADR 0002 removed.
+ */
+export const postLogs = pgTable(
+  'post_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    postId: uuid('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    action: aiActionEnum('action').notNull(),
+    model: text('model').notNull(),
+    /** Which key paid, by label — the id would say nothing when read later. */
+    keyLabel: text('key_label'),
+    /** `request` = rendered prompt, `response` = model output, `note` = metadata only. */
+    phase: postLogPhaseEnum('phase').notNull(),
+    content: text('content').notNull(),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    durationMs: integer('duration_ms'),
+    ok: boolean('ok').notNull().default(true),
+    createdAt,
+  },
+  (t) => [
+    index('post_logs_post_idx').on(t.postId, t.createdAt),
+    index('post_logs_created_idx').on(t.createdAt),
+  ],
+);
+
 /* ── inferred types ───────────────────────────────────────────────────────── */
 
 export type Project = typeof projects.$inferSelect;
@@ -384,3 +435,4 @@ export type NewPost = typeof posts.$inferInsert;
 export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type RateLimitRow = typeof rateLimitState.$inferSelect;
+export type PostLog = typeof postLogs.$inferSelect;

@@ -85,6 +85,13 @@ export type PromptScope = (typeof PROMPT_SCOPES)[number];
  * make the setting a suggestion. When a key is exhausted the chain moves to
  * the next *model*, which is where an alternative belongs.
  */
+/**
+ * What a post-log row holds. `note` carries metadata only — it is what the
+ * image branch writes, because the render itself must never land in the DB.
+ */
+export const POST_LOG_PHASES = ['request', 'response', 'note'] as const;
+export type PostLogPhase = (typeof POST_LOG_PHASES)[number];
+
 export const KEY_LEVELS = ['action', 'project', 'default'] as const;
 export type KeyLevel = (typeof KEY_LEVELS)[number];
 

@@ -52,6 +52,28 @@ describe('SVG sanitizer', () => {
   const wrap = (inner: string, attrs = 'viewBox="0 0 1200 675"') =>
     `<svg xmlns="http://www.w3.org/2000/svg" ${attrs}>${inner}</svg>`;
 
+  it('removes filters, which crash the renderer rather than the browser', () => {
+    // Not hypothetical: a model produced an feDisplacementMap whose source and
+    // map differed in size, resvg asserted in Rust, and the panic aborted the
+    // whole server process — queue included.
+    const result = sanitizeSvg(`
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675">
+        <defs>
+          <filter id="f">
+            <feTurbulence baseFrequency="0.05" result="noise"/>
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="20"/>
+          </filter>
+        </defs>
+        <rect width="600" height="400" filter="url(#f)"/>
+      </svg>
+    `);
+
+    expect(result.svg).not.toContain('feDisplacementMap');
+    expect(result.svg).not.toContain('<filter');
+    expect(result.svg).not.toContain('filter=');
+    expect(result.svg).toContain('<rect');
+  });
+
   it('strips executable and external content', () => {
     const result = sanitizeSvg(wrap('<rect/><script>x</script><image href="http://e/x.png"/>'));
     expect(result.svg).not.toContain('script');

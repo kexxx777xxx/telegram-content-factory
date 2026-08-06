@@ -150,3 +150,82 @@ export function Notice({ tone = 'amber', children }: { tone?: 'amber' | 'red'; c
   }[tone];
   return <div className={`rounded-lg border px-3 py-2 text-xs ${styles}`}>{children}</div>;
 }
+
+/**
+ * Tab strip for a page split into sections.
+ *
+ * A project has more settings than fit on one readable canvas, and scrolling
+ * past the schedule to reach the posts is how an operator loses their place.
+ */
+export function Tabs<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string; badge?: ReactNode }[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 border-b border-slate-200">
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`-mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition ${
+              active
+                ? 'border-slate-900 text-slate-900'
+                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
+            }`}
+          >
+            {option.label}
+            {option.badge}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Collapsed detail. Everything an operator needs *sometimes* goes in here, so
+ * the row itself keeps only what they need every time.
+ */
+export function Spoiler({
+  label,
+  children,
+  defaultOpen = false,
+}: {
+  label: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details className="group rounded-lg border border-slate-200 bg-slate-50" open={defaultOpen}>
+      <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900">
+        <span className="inline-block transition group-open:rotate-90">▸</span> {label}
+      </summary>
+      <div className="border-t border-slate-200 px-3 py-3">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * The name a field takes inside prompts. Without it, `{{persona}}` is knowledge
+ * that lives only in the prompt editor, and the two drift apart.
+ */
+export function VarTag({ name }: { name: string }) {
+  return (
+    <code
+      title="Підставляється в промпти під цією назвою"
+      className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600"
+    >
+      {'{{'}
+      {name}
+      {'}}'}
+    </code>
+  );
+}

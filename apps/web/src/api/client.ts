@@ -9,6 +9,7 @@ import type {
   DryRunResult,
   Health,
   ModelInfo,
+  PostLogEntry,
   ProjectDto,
   ProjectInput,
   PostsPage,
@@ -161,6 +162,7 @@ export const api = {
   listPosts: (projectId: string) => request<PostsPage>(`/projects/${projectId}/posts`),
   updatePost: (postId: string, textHtml: string) =>
     request<unknown>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify({ textHtml }) }),
+  postLogs: (postId: string) => request<PostLogEntry[]>(`/posts/${postId}/logs`),
   publishPostNow: (postId: string) =>
     request<LaunchResult>(`/posts/${postId}/publish`, { method: 'POST' }),
   publishProjectNow: (projectId: string) =>
