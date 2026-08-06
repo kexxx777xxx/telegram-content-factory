@@ -111,6 +111,32 @@ export async function publishPost(input: PublishInput): Promise<PublishResult> {
   return { messageId: sent.messageId, extraMessageIds: sent.extraMessageIds };
 }
 
+/**
+ * Puts an already-published post into one more chat.
+ *
+ * `copyMessage`, not a second `publishPost`: the photo is uploaded once and the
+ * mirrors reuse the file Telegram already has, the text is split exactly as it
+ * was in the main channel, and a copy carries none of the "forwarded from"
+ * header `forwardMessage` would add.
+ */
+export async function copyToChat(
+  token: string,
+  fromChatId: string,
+  toChatId: string,
+  messageIds: number[],
+): Promise<void> {
+  for (const messageId of messageIds) {
+    // Own pacing window: the per-chat ceiling is per chat, not per bot.
+    await pace(`${fromChatId}->${toChatId}`);
+
+    const form = new FormData();
+    form.append('chat_id', toChatId);
+    form.append('from_chat_id', fromChatId);
+    form.append('message_id', String(messageId));
+    await call<TelegramMessage>(token, 'copyMessage', form);
+  }
+}
+
 async function sendPhoto(input: PublishInput, caption?: string): Promise<TelegramMessage> {
   await pace(input.botKey);
 

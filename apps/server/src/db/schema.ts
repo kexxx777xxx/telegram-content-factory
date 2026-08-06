@@ -79,6 +79,11 @@ export const projects = pgTable(
     telegramChannelId: text('telegram_channel_id').notNull(),
     /** Cached from getChat; present only for public channels, drives permalinks. */
     telegramChannelUsername: text('telegram_channel_username'),
+    /** Mirrors: the published message is copied into each of these after the fact. */
+    telegramMirrorChatIds: text('telegram_mirror_chat_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     /** AES-256-GCM, never leaves the server unmasked. */
     telegramBotTokenEnc: text('telegram_bot_token_enc'),
     adminChatId: text('admin_chat_id'),

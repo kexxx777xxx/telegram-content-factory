@@ -8,7 +8,7 @@ import { logger } from '../logger.js';
 import { removeStagedImage, stagedImageExists } from '../media/staging.js';
 import { TelegramApiError } from '../telegram/api.js';
 import { buildPermalink } from '../telegram/permalink.js';
-import { publishPost as sendToTelegram } from '../telegram/publisher.js';
+import { copyToChat, publishPost as sendToTelegram } from '../telegram/publisher.js';
 import { getPost, PostNotFoundError, type GenerationMeta } from './posts.js';
 import { projectBotToken } from './projects.js';
 
@@ -169,7 +169,37 @@ export async function publishReadyPost(
     message: `Опубліковано ${source === 'manual' ? 'вручну' : 'за розкладом'}: ${permalink}`,
   });
 
-  log.info({ permalink, messageId: result.messageId }, 'post published, local copy erased');
+  /*
+   * Mirrors come after the commit, and one failing does not fail the post: the
+   * post itself is already in its channel, and throwing here would only make
+   * the queue retry a publish that is done — the retry would find the post
+   * `published`, skip it, and the mirrors would still be missing. So each
+   * channel is tried separately and a failure is written to the journal, where
+   * the operator can see which channel was missed and why.
+   */
+  for (const chatId of project.telegramMirrorChatIds) {
+    try {
+      await copyToChat(token, project.telegramChannelId, chatId, [
+        result.messageId,
+        ...result.extraMessageIds,
+      ]);
+    } catch (err) {
+      log.warn({ chatId, err }, 'mirror copy failed');
+      await record({
+        projectId: post.projectId,
+        postId: post.id,
+        kind: 'publish',
+        source,
+        ok: false,
+        message: `Дзеркало ${chatId}: не скопійовано — ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  log.info(
+    { permalink, messageId: result.messageId, mirrors: project.telegramMirrorChatIds.length },
+    'post published, local copy erased',
+  );
   return 'published';
 }
 

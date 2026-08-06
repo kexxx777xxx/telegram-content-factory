@@ -23,6 +23,8 @@ export interface ProjectFormValue {
   imageStyle: string;
   hashtags: string;
   telegramChannelId: string;
+  /** Free text, one channel per line or comma-separated — same as hashtags. */
+  telegramMirrorChatIds: string;
   telegramBotToken: string;
   adminChatId: string;
   apiKeyId: string;
@@ -50,6 +52,7 @@ export function emptyForm(): ProjectFormValue {
     imageStyle: '',
     hashtags: '',
     telegramChannelId: '',
+    telegramMirrorChatIds: '',
     telegramBotToken: '',
     adminChatId: '',
     apiKeyId: '',
@@ -78,6 +81,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     imageStyle: project.imageStyle,
     hashtags: project.hashtags.join(', '),
     telegramChannelId: project.telegramChannelId,
+    telegramMirrorChatIds: project.telegramMirrorChatIds.join(', '),
     // Never prefilled: the server only ever returns a mask.
     telegramBotToken: '',
     adminChatId: project.adminChatId ?? '',
@@ -130,6 +134,10 @@ function common(form: ProjectFormValue) {
       .filter(Boolean)
       .map((tag) => `#${tag}`),
     telegramChannelId: form.telegramChannelId.trim(),
+    telegramMirrorChatIds: form.telegramMirrorChatIds
+      .split(/[,\s]+/)
+      .map((id) => id.trim())
+      .filter(Boolean),
     adminChatId: form.adminChatId.trim() || null,
     apiKeyId: form.apiKeyId || null,
     imageMode: form.imageMode,
@@ -381,6 +389,18 @@ export function ProjectForm({
               value={value.telegramBotToken}
               placeholder={mode === 'edit' ? '••••••' : '123456789:AA…'}
               onChange={(e) => set('telegramBotToken', e.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Дзеркала"
+            hint="Ще канали, куди копіювати той самий пост. Через кому. Бот має бути адміном у кожному."
+          >
+            <Textarea
+              rows={2}
+              value={value.telegramMirrorChatIds}
+              placeholder="@second_channel, -1001234567890"
+              onChange={(e) => set('telegramMirrorChatIds', e.target.value)}
             />
           </Field>
 

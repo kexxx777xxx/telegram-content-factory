@@ -32,6 +32,7 @@ export function toDto(row: Project): ProjectDto {
 
     telegramChannelId: row.telegramChannelId,
     telegramChannelUsername: row.telegramChannelUsername,
+    telegramMirrorChatIds: row.telegramMirrorChatIds,
     botTokenMask: maskStoredSecret(row.telegramBotTokenEnc),
     adminChatId: row.adminChatId,
 
@@ -84,6 +85,7 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       imageStyle: input.imageStyle,
       hashtags: input.hashtags,
       telegramChannelId: input.telegramChannelId,
+      telegramMirrorChatIds: input.telegramMirrorChatIds,
       telegramBotTokenEnc: input.telegramBotToken ? encryptSecret(input.telegramBotToken) : null,
       adminChatId: input.adminChatId ?? null,
       apiKeyId: input.apiKeyId ?? null,
@@ -121,6 +123,9 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
     values.telegramChannelId = patch.telegramChannelId;
     // The cached username belongs to the old channel; re-verification refills it.
     values.telegramChannelUsername = null;
+  }
+  if (patch.telegramMirrorChatIds !== undefined) {
+    values.telegramMirrorChatIds = patch.telegramMirrorChatIds;
   }
   if (patch.adminChatId !== undefined) values.adminChatId = patch.adminChatId ?? null;
   if (patch.apiKeyId !== undefined) values.apiKeyId = patch.apiKeyId;

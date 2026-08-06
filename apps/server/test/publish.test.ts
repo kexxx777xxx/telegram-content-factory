@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { publishPost, type SentSoFar } from '../src/telegram/publisher.js';
+import { copyToChat, publishPost, type SentSoFar } from '../src/telegram/publisher.js';
 import { TelegramApiError } from '../src/telegram/api.js';
 
 /**
@@ -18,6 +18,8 @@ interface Sent {
   method: string;
   caption: string | null;
   text: string | null;
+  chatId: string | null;
+  messageId: string | null;
 }
 
 let sent: Sent[] = [];
@@ -33,6 +35,8 @@ function fakeFetch(url: string | URL | Request, init?: RequestInit): Promise<Res
     method,
     caption: (form.get('caption') as string | null) ?? null,
     text: (form.get('text') as string | null) ?? null,
+    chatId: (form.get('chat_id') as string | null) ?? null,
+    messageId: (form.get('message_id') as string | null) ?? null,
   });
 
   if (failOn.has(sent.length)) {
@@ -177,6 +181,24 @@ describe('publishing a post as photo plus message', () => {
     expect(sent.every((s) => s.method === 'sendMessage')).toBe(true);
     expect(result.extraMessageIds.length).toBeGreaterThan(partial.extraMessageIds.length);
     expect(result.extraMessageIds[0]).toBe(partial.extraMessageIds[0]);
+  });
+});
+
+describe('mirroring a published post into another channel', () => {
+  it('copies every part, in the order the channel got them', async () => {
+    await copyToChat('test-token', '@chan', '@mirror', [100, 101]);
+
+    expect(sent.map((s) => s.method)).toEqual(['copyMessage', 'copyMessage']);
+    expect(sent.map((s) => s.messageId)).toEqual(['100', '101']);
+    expect(sent.every((s) => s.chatId === '@mirror')).toBe(true);
+  });
+
+  it('surfaces a refusal instead of swallowing it', async () => {
+    failOn = new Set([1]);
+
+    await expect(copyToChat('test-token', '@chan', '@mirror', [100])).rejects.toBeInstanceOf(
+      TelegramApiError,
+    );
   });
 });
 

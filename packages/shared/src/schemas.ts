@@ -88,6 +88,13 @@ const projectFields = {
   hashtags: z.array(z.string().max(64)).max(20),
 
   telegramChannelId: telegramChannelSchema,
+  /**
+   * Extra channels the same post lands in. The post is published once into
+   * `telegramChannelId` and copied from there, so the permalink, the topic bank
+   * and the schedule stay tied to one channel — these are mirrors, not
+   * independent projects.
+   */
+  telegramMirrorChatIds: z.array(telegramChannelSchema).max(10),
   adminChatId: z.string().nullable(),
 
   /** null = use the default key. */
@@ -136,6 +143,7 @@ export const projectInputSchema = z.object({
   imageStyle: projectFields.imageStyle.default(''),
   hashtags: projectFields.hashtags.default([]),
   telegramBotToken: z.string().min(20).optional(),
+  telegramMirrorChatIds: projectFields.telegramMirrorChatIds.default([]),
   adminChatId: projectFields.adminChatId.optional(),
   apiKeyId: projectFields.apiKeyId.optional(),
   imageMode: projectFields.imageMode.default('svg'),
@@ -188,6 +196,7 @@ export const projectDtoSchema = z.object({
 
   telegramChannelId: z.string(),
   telegramChannelUsername: z.string().nullable(),
+  telegramMirrorChatIds: z.array(z.string()),
   botTokenMask: z.string().nullable(),
   adminChatId: z.string().nullable(),
   apiKeyId: z.string().uuid().nullable(),

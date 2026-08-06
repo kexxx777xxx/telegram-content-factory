@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "telegram_mirror_chat_ids" text[] DEFAULT '{}'::text[] NOT NULL;
