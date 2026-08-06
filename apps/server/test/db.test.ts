@@ -25,7 +25,8 @@ import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/servi
 import { abandonExpired, BATCH_MIN_SLACK_MS, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
-import { resetForRegeneration } from '../src/services/posts.js';
+import { listPosts, resetForRegeneration } from '../src/services/posts.js';
+import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
 import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 
 /**
@@ -325,6 +326,99 @@ describe('activity log', () => {
     const [entry] = await projectLog(project.id);
     expect(entry?.kind).toBe('topic_created');
     expect(entry?.source).toBe('manual');
+  });
+});
+
+describe('key tier and batching', () => {
+  /*
+   * Batch is a paid-plan feature. A free key with the flag set fails at the
+   * vendor — a day later, on a post that had counted on the cheap tier — so the
+   * pair is resolved server-side rather than trusted from the form.
+   */
+  it('refuses to enable batch on a free key', async () => {
+    const id = await createApiKey({
+      provider: 'gemini',
+      label: 'free one',
+      secret: 'secret-value',
+      isDefault: false,
+      enabled: true,
+      tier: 'free',
+      batchEnabled: true,
+      rpmLimit: null,
+      dailyRequestBudget: null,
+    });
+
+    const [row] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+    expect(row?.batchEnabled).toBe(false);
+  });
+
+  it('switches batching off when a key moves back to free', async () => {
+    const id = await createApiKey({
+      provider: 'gemini',
+      label: 'paid one',
+      secret: 'secret-value',
+      isDefault: false,
+      enabled: true,
+      tier: 'paid',
+      batchEnabled: true,
+      rpmLimit: null,
+      dailyRequestBudget: null,
+    });
+    expect((await db.select().from(apiKeys).where(eq(apiKeys.id, id)))[0]?.batchEnabled).toBe(true);
+
+    await updateApiKey(id, { tier: 'free' });
+
+    const [row] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+    expect(row?.batchEnabled).toBe(false);
+  });
+
+  it('keeps limits editable after creation', async () => {
+    const id = await createApiKey({
+      provider: 'gemini',
+      label: 'limits',
+      secret: 'secret-value',
+      isDefault: false,
+      enabled: true,
+      tier: 'free',
+      batchEnabled: false,
+      rpmLimit: 4,
+      dailyRequestBudget: 20,
+    });
+
+    await updateApiKey(id, { rpmLimit: 10, dailyRequestBudget: 500 });
+
+    const [row] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+    expect(row?.rpmLimit).toBe(10);
+    expect(row?.dailyRequestBudget).toBe(500);
+  });
+});
+
+describe('the posts list', () => {
+  /*
+   * The regression this pins: ideas carry no slot, Postgres sorts NULLs first
+   * in a DESC order, and the limit was spent entirely on them — so a project
+   * with more ideas than the limit showed an empty list while the status chips
+   * still counted the posts that never arrived.
+   */
+  it('shows scheduled posts even when ideas outnumber them', async () => {
+    const project = await makeProject();
+    await insertIdeas(
+      project.id,
+      Array.from({ length: 30 }, (_, i) => ({ title: `Ідея номер ${i}` })),
+      'manual',
+    );
+    await db.insert(posts).values({
+      projectId: project.id,
+      status: 'published',
+      scheduledAt: new Date(Date.now() - 3600_000),
+      topicTitle: 'Опублікований',
+    });
+
+    const listed = await listPosts(project.id, 5);
+
+    // The scheduled one comes first, not after thirty ideas.
+    expect(listed[0]?.topicTitle).toBe('Опублікований');
+    expect(listed.some((p) => p.status === 'idea')).toBe(true);
   });
 });
 

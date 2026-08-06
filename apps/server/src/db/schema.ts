@@ -13,6 +13,7 @@ import {
   PROMPT_SCOPES,
   PUBLISH_MODES,
   POST_SOURCES,
+  KEY_TIERS,
 } from '@tcf/shared';
 import { sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -38,6 +39,7 @@ export const publishModeEnum = pgEnum('publish_mode', PUBLISH_MODES);
 export const missPolicyEnum = pgEnum('miss_policy', MISS_POLICIES);
 export const postStatusEnum = pgEnum('post_status', POST_STATUSES);
 export const postSourceEnum = pgEnum('post_source', POST_SOURCES);
+export const keyTierEnum = pgEnum('key_tier', KEY_TIERS);
 export const aiActionEnum = pgEnum('ai_action', AI_ACTIONS);
 export const aiProviderEnum = pgEnum('ai_provider', AI_PROVIDERS);
 export const promptScopeEnum = pgEnum('prompt_scope', PROMPT_SCOPES);
@@ -137,6 +139,12 @@ export const apiKeys = pgTable(
     /** Used whenever nothing more specific is chosen. Exactly one may be set. */
     isDefault: boolean('is_default').notNull().default(false),
     enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Which plan the key is on. Batch is a paid-plan feature, so this is what
+     * lets the switch below be refused up front instead of failing at the
+     * vendor hours later, when a post was already counting on the cheap tier.
+     */
+    tier: keyTierEnum('tier').notNull().default('free'),
     /**
      * Whether this key may use the batch tier — half price, up to 24 hours.
      * Off by default and decided per key on purpose: batch is a paid-tier

@@ -44,7 +44,11 @@ export async function listApiKeys(): Promise<ApiKeyDto[]> {
     slot: key.slot,
     isDefault: key.isDefault,
     enabled: key.enabled,
+    tier: key.tier,
     batchEnabled: key.batchEnabled,
+    // Derived, not stored: the UI should grey the switch out rather than let it
+    // be flipped into a state the vendor will reject.
+    batchAvailable: key.tier === 'paid',
     rpmLimit: key.rpmLimit,
     dailyRequestBudget: key.dailyRequestBudget,
     usageToday: {
@@ -84,7 +88,10 @@ export async function createApiKey(input: ApiKeyInput): Promise<string> {
         secretEnc: encryptSecret(input.secret),
         isDefault: input.isDefault,
         enabled: input.enabled,
-        batchEnabled: input.batchEnabled,
+        tier: input.tier,
+        // The invariant, enforced here rather than trusted from the client:
+        // batching on a free key fails at the vendor, hours later.
+        batchEnabled: input.tier === 'paid' && input.batchEnabled,
         rpmLimit: input.rpmLimit,
         dailyRequestBudget: input.dailyRequestBudget,
       })
@@ -113,10 +120,25 @@ async function clearDefault(tx: Tx, provider: 'gemini', keepId: string | null): 
 export async function updateApiKey(id: string, patch: ApiKeyUpdate): Promise<void> {
   const values: Partial<typeof apiKeys.$inferInsert> = { updatedAt: new Date() };
 
+  const [current] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+  if (!current) throw new ApiKeyNotFoundError('Ключ не знайдено');
+
   if (patch.label !== undefined) values.label = patch.label;
   if (patch.enabled !== undefined) values.enabled = patch.enabled;
   if (patch.isDefault !== undefined) values.isDefault = patch.isDefault;
-  if (patch.batchEnabled !== undefined) values.batchEnabled = patch.batchEnabled;
+  if (patch.tier !== undefined) values.tier = patch.tier;
+
+  /*
+   * Batching and the plan are one decision, so they are resolved together.
+   * Moving a key to `free` switches batching off with it — leaving the flag set
+   * would keep submitting orders the vendor rejects, and the failure would show
+   * up a day later on a post that had counted on the cheap tier.
+   */
+  const tier = patch.tier ?? current.tier;
+  if (patch.batchEnabled !== undefined || patch.tier !== undefined) {
+    const wanted = patch.batchEnabled ?? current.batchEnabled;
+    values.batchEnabled = tier === 'paid' && wanted;
+  }
   if (patch.rpmLimit !== undefined) values.rpmLimit = patch.rpmLimit;
   if (patch.dailyRequestBudget !== undefined) values.dailyRequestBudget = patch.dailyRequestBudget;
   // Empty string means "keep the stored secret" — same contract as bot tokens.

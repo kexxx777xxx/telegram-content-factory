@@ -13,6 +13,7 @@ import {
   PUBLISH_MODES,
   SCHEDULE_MODES,
   POST_SOURCES,
+  KEY_TIERS,
 } from './enums.js';
 
 /** `HH:MM` in the project's own timezone. */
@@ -244,6 +245,8 @@ export const apiKeyInputSchema = z.object({
   /** Used whenever nothing more specific is chosen. */
   isDefault: z.boolean().default(false),
   enabled: z.boolean().default(true),
+  /** Free or paid plan. Batch is refused on a free key — it fails at the vendor. */
+  tier: z.enum(KEY_TIERS).default('free'),
   /** Batch tier: half price, up to 24 h. Paid keys only. */
   batchEnabled: z.boolean().default(false),
   /** Proactive per-minute ceiling. null = react to 429 only. */
@@ -259,6 +262,7 @@ export const apiKeyUpdateSchema = z
     label: z.string().min(1).max(120),
     isDefault: z.boolean(),
     enabled: z.boolean(),
+    tier: z.enum(KEY_TIERS),
     batchEnabled: z.boolean(),
     rpmLimit: z.number().int().min(1).max(10_000).nullable(),
     dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable(),
@@ -271,12 +275,15 @@ export const apiKeyDtoSchema = z.object({
   id: z.string().uuid(),
   provider: z.enum(AI_PROVIDERS),
   label: z.string(),
-  /** Stable number shown everywhere a key is chosen: «Ключ 2». */
+  /** Stable ordering number; not displayed — the label is what is recognised. */
   slot: z.number().int(),
   secretMask: z.string(),
   isDefault: z.boolean(),
   enabled: z.boolean(),
+  tier: z.enum(KEY_TIERS),
   batchEnabled: z.boolean(),
+  /** False on a free key: the vendor rejects batch there, so the switch is inert. */
+  batchAvailable: z.boolean(),
   rpmLimit: z.number().int().nullable(),
   dailyRequestBudget: z.number().int().nullable(),
   /** Today's counters, so budget pressure is visible before it bites. */

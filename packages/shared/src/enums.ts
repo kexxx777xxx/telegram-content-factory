@@ -58,6 +58,16 @@ export const BUFFERED_POST_STATUSES = [
   'publishing',
 ] as const;
 
+/**
+ * Which billing tier a key sits on.
+ *
+ * Not cosmetic: the batch tier is a paid-plan feature, so a free key that has
+ * batching switched on fails at submit time — hours later, when a post was
+ * counting on it. Recording the tier lets the switch be refused up front.
+ */
+export const KEY_TIERS = ['free', 'paid'] as const;
+export type KeyTier = (typeof KEY_TIERS)[number];
+
 /** Who put the subject there. Survives on the post it became. */
 export const POST_SOURCES = ['ai', 'manual'] as const;
 export type PostSource = (typeof POST_SOURCES)[number];

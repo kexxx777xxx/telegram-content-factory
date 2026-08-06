@@ -103,12 +103,21 @@ export async function getPost(id: string): Promise<Post> {
   return row;
 }
 
-export async function listPosts(projectId: string, limit = 100): Promise<Post[]> {
+/**
+ * The whole list: scheduled posts first, then the idea bank.
+ *
+ * `NULLS LAST` is load-bearing, not cosmetic. Ideas carry no slot, and Postgres
+ * sorts NULLs *first* in a DESC order — so a project with more ideas than the
+ * limit returned nothing but ideas, while the status chips (counted by a
+ * separate query) still advertised posts that never appeared. The list looked
+ * empty for the one channel that had used it most.
+ */
+export async function listPosts(projectId: string, limit = 500): Promise<Post[]> {
   return db
     .select()
     .from(posts)
     .where(eq(posts.projectId, projectId))
-    .orderBy(desc(posts.scheduledAt))
+    .orderBy(sql`${posts.scheduledAt} desc nulls last`, desc(posts.createdAt))
     .limit(limit);
 }
 

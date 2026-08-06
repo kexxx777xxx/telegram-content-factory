@@ -230,6 +230,8 @@ function PostRow({
       })
     : 'без слоту';
 
+  /** Nothing has been asked of a model yet — the row is only a subject. */
+  const isIdea = post.status === 'idea';
   const length = post.generation.visibleLength ?? 0;
   const overCaption = length > CAPTION_LIMIT;
 
@@ -308,7 +310,7 @@ function PostRow({
 
           {/* The `published` hint above already says the text is gone; a Notice
               repeating it added a second sentence and no second fact. */}
-          {post.status === 'published' ? null : post.textHtml === null ? (
+          {post.status === 'published' || isIdea ? null : post.textHtml === null ? (
             <p className="text-sm text-slate-500">Текст ще не згенеровано.</p>
           ) : (
             <>
@@ -325,6 +327,13 @@ function PostRow({
             </>
           )}
 
+          {/*
+            An idea has been through nothing: no model call, no prompt version,
+            no illustration, no journal. Showing those panels full of dashes
+            invited the reader to look for information that cannot exist yet.
+          */}
+          {!isIdea && (
+            <>
           <Spoiler label="Як це згенеровано">
             <dl className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[11rem_1fr]">
               <dt className="text-slate-500">Модель тексту</dt>
@@ -349,6 +358,8 @@ function PostRow({
           </Spoiler>
 
           <PostLog post={post} project={project} />
+            </>
+          )}
 
           {post.status !== 'published' && (
             <div className="flex flex-wrap items-center gap-2">
