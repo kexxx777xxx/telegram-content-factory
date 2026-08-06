@@ -1,7 +1,7 @@
 import type { AiAction, KeyLevel } from '@tcf/shared';
 import { logger } from '../logger.js';
 import { renderPrompt, resolvePrompt } from '../prompts/resolve.js';
-import { resolveChain, type ChainStep } from './chains.js';
+import { resolveChain } from './chains.js';
 import { providers } from './gemini.js';
 import { resolveKey } from './keys.js';
 import { acquire, closeCircuit, openCircuit, recordUsage } from './rateLimiter.js';
@@ -53,8 +53,6 @@ export interface RunChainOptions {
   projectId: string;
   variables: Record<string, string | number | undefined>;
   responseSchema?: Record<string, unknown>;
-  /** Overrides the configured chain — used by dry run to test one model. */
-  onlyModel?: string;
   timeoutMs?: number;
   /** Present when the call belongs to a post; without it nothing is logged. */
   postId?: string;
@@ -74,15 +72,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
     throw new ChainMissingError(`Для дії «${options.action}» не налаштовано жодного ланцюжка моделей`);
   }
 
-  const steps = options.onlyModel
-    ? chain.steps
-        .filter((step) => step.model === options.onlyModel)
-        .concat(
-          chain.steps.some((step) => step.model === options.onlyModel)
-            ? []
-            : [syntheticStep(options.onlyModel, chain.steps[0])],
-        )
-    : chain.steps;
+  const steps = chain.steps;
 
   const attempts: ChainAttempt[] = [];
   const journaling = await logEnabled(options.projectId);
@@ -286,17 +276,6 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
 
   logger.warn({ action: options.action, projectId: options.projectId, attempts }, 'chain exhausted');
   throw new ChainExhaustedError(options.action, attempts, earliestRetry);
-}
-
-function syntheticStep(model: string, template: ChainStep | undefined): ChainStep {
-  return {
-    id: 'synthetic',
-    position: 0,
-    provider: 'gemini',
-    model,
-    params: template?.params ?? {},
-    promptId: null,
-  };
 }
 
 function earlier(current: Date | undefined, candidate: Date): Date {

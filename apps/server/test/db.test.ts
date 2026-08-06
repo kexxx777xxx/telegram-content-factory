@@ -19,7 +19,7 @@ import { claimJob, completeJob, failJob, rescheduleJob } from '../src/queue/clai
 import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
-import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
+import { launchPost, launchProject, launchTopic, NotLaunchableError } from '../src/services/publishNow.js';
 import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
 import { abandonExpired, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
@@ -324,6 +324,74 @@ describe('activity log', () => {
     const [entry] = await projectLog(project.id);
     expect(entry?.kind).toBe('topic_created');
     expect(entry?.source).toBe('manual');
+  });
+});
+
+describe('launching a topic', () => {
+  /*
+   * A topic is a post that only has its subject, so the list offers it the same
+   * actions. Promoting it must claim the topic and bind it to the new post —
+   * otherwise the next generation would take it a second time.
+   */
+  async function newTopic(projectId: string, title = 'Тема для запуску') {
+    await insertTopics(projectId, [{ title }], 'manual');
+    const [row] = await db
+      .select()
+      .from(topics)
+      .where(and(eq(topics.projectId, projectId), eq(topics.title, title)))
+      .limit(1);
+    return row!;
+  }
+
+  it('turns a topic into a post bound to it', async () => {
+    const project = await makeProject();
+    const topic = await newTopic(project.id);
+
+    const result = await launchTopic(topic.id, { publish: false });
+
+    const [post] = await db.select().from(posts).where(eq(posts.id, result.postId)).limit(1);
+    expect(post?.topicId).toBe(topic.id);
+    expect(post?.topicTitle).toBe('Тема для запуску');
+    expect(result.job).toBe('generate_post');
+
+    const [after] = await db.select().from(topics).where(eq(topics.id, topic.id)).limit(1);
+    expect(after?.status).toBe('queued');
+  });
+
+  it('queues generate-and-publish when asked to publish', async () => {
+    const project = await makeProject();
+    const topic = await newTopic(project.id);
+
+    const result = await launchTopic(topic.id, { publish: true });
+
+    expect(result.job).toBe('generate_and_publish');
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.dedupeKey, `post:${result.postId}:generate_publish`))
+      .limit(1);
+    expect(job).toBeDefined();
+  });
+
+  /** Two clicks on the same row must not put the topic in the channel twice. */
+  it('does not create a second post for a topic already launched', async () => {
+    const project = await makeProject();
+    const topic = await newTopic(project.id);
+
+    const first = await launchTopic(topic.id, { publish: false });
+    const second = await launchTopic(topic.id, { publish: false });
+
+    expect(second.postId).toBe(first.postId);
+    const rows = await db.select().from(posts).where(eq(posts.topicId, topic.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('refuses a topic already used by a published post', async () => {
+    const project = await makeProject();
+    const topic = await newTopic(project.id);
+    await db.update(topics).set({ status: 'used' }).where(eq(topics.id, topic.id));
+
+    await expect(launchTopic(topic.id, { publish: true })).rejects.toBeInstanceOf(NotLaunchableError);
   });
 });
 

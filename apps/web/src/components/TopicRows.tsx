@@ -1,7 +1,8 @@
 import type { ProjectDto, ReplenishReportDto, TopicsPage } from '@tcf/shared';
-import { Check, Loader2, Sparkles, Trash2, Upload } from 'lucide-react';
+import { Check, Loader2, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { LaunchButton } from './LaunchButton';
 import { Badge, Button, Field, Notice, Textarea } from './ui';
 
 /**
@@ -28,6 +29,8 @@ export function TopicRows({
   const [importing, setImporting] = useState(false);
   const [importText, setImportText] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** Topic id currently being promoted, so only its own buttons spin. */
+  const [launching, setLaunching] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setPage(await api.listTopics(project.id));
@@ -77,6 +80,24 @@ export function TopicRows({
     }
   }
 
+  /**
+   * A topic is a post without a slot, so the row offers the same two things the
+   * list offers a post: put it in the buffer, or send it now.
+   */
+  async function launch(topicId: string, publish: boolean) {
+    setLaunching(topicId);
+    setError(null);
+    try {
+      await api.launchTopic(topicId, publish);
+      await reload();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не вдалося запустити тему');
+    } finally {
+      setLaunching(null);
+    }
+  }
+
   async function removeSelected() {
     setBusy(true);
     try {
@@ -97,28 +118,59 @@ export function TopicRows({
       {visible.length > 0 && (
         <div className="space-y-2">
           {visible.map((topic) => (
-            <label
+            <div
               key={topic.id}
-              className="flex cursor-pointer flex-wrap items-center gap-3 rounded-lg border border-dashed border-slate-200 px-4 py-3 hover:bg-slate-50"
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed border-slate-200 px-4 py-3 hover:bg-slate-50"
             >
-              <input
-                type="checkbox"
-                checked={selected.has(topic.id)}
-                onChange={(e) => {
-                  const next = new Set(selected);
-                  if (e.target.checked) next.add(topic.id);
-                  else next.delete(topic.id);
-                  setSelected(next);
-                }}
-                className="size-4 rounded border-slate-300"
-              />
-              <Badge>без слоту</Badge>
-              <span className="min-w-0 flex-1 truncate text-sm">{topic.title}</span>
+              {/* Only the checkbox and title toggle selection — the buttons
+                  beside them must not, which is why this is no longer one
+                  <label> around the whole row. */}
+              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={selected.has(topic.id)}
+                  onChange={(e) => {
+                    const next = new Set(selected);
+                    if (e.target.checked) next.add(topic.id);
+                    else next.delete(topic.id);
+                    setSelected(next);
+                  }}
+                  className="size-4 shrink-0 rounded border-slate-300"
+                />
+                <Badge>без слоту</Badge>
+                <span className="min-w-0 flex-1 truncate text-sm">{topic.title}</span>
+              </label>
+
               <span className="text-xs text-slate-400">
                 {topic.source === 'ai' ? 'AI' : 'вручну'}
                 {topic.category ? ` · ${topic.category}` : ''}
               </span>
-            </label>
+
+              <span className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => void launch(topic.id, false)}
+                  disabled={busy || launching !== null}
+                >
+                  {launching === topic.id ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="size-4" />
+                  )}
+                  Згенерувати
+                </Button>
+                <LaunchButton
+                  label="Опублікувати зараз"
+                  confirm={`Згенерувати пост за темою «${topic.title}» і одразу опублікувати?`}
+                  disabled={busy || launching !== null}
+                  run={() => api.launchTopic(topic.id, true)}
+                  onDone={() => {
+                    void reload();
+                    onChanged();
+                  }}
+                />
+              </span>
+            </div>
           ))}
         </div>
       )}

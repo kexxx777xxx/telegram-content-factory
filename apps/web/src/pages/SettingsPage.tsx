@@ -131,7 +131,7 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
         {apiKey.isDefault && <Badge tone="green">дефолтний</Badge>}
         {apiKey.batchEnabled && (
           <Badge tone="amber">
-            <span title="Довгі задачі йдуть у batch: −50% ціни, відповідь до 24 год">batch</span>
+            <span title="Теми й текст поста наперед ідуть у batch: −50% ціни, відповідь до 24 год. Зображення завжди синхронні — вони в кінці ланцюжка залежностей.">batch</span>
           </Badge>
         )}
         {!apiKey.enabled && <Badge tone="red">вимкнено</Badge>}
@@ -139,7 +139,7 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
         <span className="ml-auto flex items-center gap-2">
           <Button
             variant="secondary"
-            title="Batch — тариф із затримкою до 24 год за півціни. Працює лише на платному ключі."
+            title="Batch — тариф із затримкою до 24 год за півціни. Працює лише на платному ключі. Стосується тільки тем і тексту поста наперед; зображення малюються синхронно завжди."
             onClick={() => void toggleBatch()}
             disabled={busy}
           >

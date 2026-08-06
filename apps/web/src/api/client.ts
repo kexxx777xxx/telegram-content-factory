@@ -95,7 +95,7 @@ export interface JobsPage {
 
 export interface LaunchResult {
   postId: string;
-  job: 'publish_post' | 'generate_and_publish';
+  job: 'publish_post' | 'generate_and_publish' | 'generate_post';
   created: boolean;
 }
 
@@ -188,6 +188,12 @@ export const api = {
     }),
   deleteTopics: (ids: string[]) =>
     request<{ removed: number }>('/topics/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+  /** Promotes a topic to a real post: generate only, or generate and publish. */
+  launchTopic: (topicId: string, publish: boolean) =>
+    request<LaunchResult>(`/topics/${topicId}/launch`, {
+      method: 'POST',
+      body: JSON.stringify({ publish }),
+    }),
 
   dryRun: (projectId: string, input: DryRunInput) =>
     request<DryRunResult>(`/projects/${projectId}/dry-run`, {

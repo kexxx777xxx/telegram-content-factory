@@ -344,10 +344,16 @@ export const saveActionConfigSchema = z.object({
 
 /* ── dry run ──────────────────────────────────────────────────────────────── */
 
+/**
+ * A dry run is the configured chain, run for real, and nothing else.
+ *
+ * It deliberately takes no model: picking one by hand tested a setup that
+ * generation would never use, so a green result proved nothing about the thing
+ * being configured. The chain is the unit that matters — first model, next one
+ * if that is rate limited or down.
+ */
 export const dryRunInputSchema = z.object({
   action: z.enum(AI_ACTIONS),
-  /** Restricts the run to one model instead of walking the whole chain. */
-  model: z.string().optional(),
   variables: z.record(z.string(), z.string()).default({}),
 });
 export type DryRunInput = z.infer<typeof dryRunInputSchema>;

@@ -11,8 +11,9 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
+import { LaunchButton } from './LaunchButton';
 import { TopicRows } from './TopicRows';
-import { Badge, Button, Card, Input, Notice, Spoiler, Textarea } from './ui';
+import { Badge, Button, Card, Input, Spoiler, Textarea } from './ui';
 
 /**
  * Status vocabulary in one place.
@@ -327,11 +328,9 @@ function PostRow({
             />
           )}
 
-          {post.status === 'published' ? (
-            <Notice>
-              Текст стерто після публікації — у Telegram він уже є, а тут лишається лише лінк.
-            </Notice>
-          ) : post.textHtml === null ? (
+          {/* The `published` hint above already says the text is gone; a Notice
+              repeating it added a second sentence and no second fact. */}
+          {post.status === 'published' ? null : post.textHtml === null ? (
             <p className="text-sm text-slate-500">Текст ще не згенеровано.</p>
           ) : (
             <>
@@ -513,55 +512,3 @@ function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
   );
 }
 
-/**
- * The manual launch. Confirmation is not ceremony: this writes to a live
- * channel, and unlike everything else on this card it cannot be undone.
- */
-function LaunchButton({
-  label,
-  confirm,
-  disabled,
-  run,
-  onDone,
-}: {
-  label: string;
-  confirm: string;
-  disabled?: boolean;
-  run: () => Promise<LaunchResult>;
-  onDone: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function click() {
-    if (!window.confirm(confirm)) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    try {
-      const launched = await run();
-      setResult(
-        launched.job === 'publish_post'
-          ? 'У черзі на публікацію'
-          : 'Генерується і одразу піде в канал',
-      );
-      onDone();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не вдалося запустити');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <Button variant="secondary" onClick={() => void click()} disabled={busy || disabled}>
-        {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-        {label}
-      </Button>
-      {result && <span className="text-sm text-emerald-600">{result}</span>}
-      {error && <span className="text-sm text-red-600">{error}</span>}
-    </>
-  );
-}

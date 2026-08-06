@@ -107,15 +107,15 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
     ...parsed.data.variables,
   };
 
-  const prompt = await resolvePrompt(parsed.data.action, project.id, parsed.data.model ?? null);
+  const prompt = await resolvePrompt(parsed.data.action, project.id, null);
   const renderedPrompt = renderPrompt(prompt.body, variables);
 
   try {
+    // The configured chain, exactly as generation would run it.
     const result = await runChain({
       action: parsed.data.action,
       projectId: project.id,
       variables,
-      ...(parsed.data.model ? { onlyModel: parsed.data.model } : {}),
     });
 
     res.json({

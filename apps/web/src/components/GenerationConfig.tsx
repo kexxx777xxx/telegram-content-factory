@@ -135,7 +135,6 @@ function ActionRow({
   const [saved, setSaved] = useState(false);
   const [dry, setDry] = useState<DryRunResult | null>(null);
   const [running, setRunning] = useState(false);
-  const [dryModel, setDryModel] = useState('');
 
   useEffect(() => {
     setSteps(config.steps);
@@ -178,11 +177,7 @@ function ActionRow({
     setDry(null);
     try {
       setDry(
-        await api.dryRun(projectId, {
-          action: config.action,
-          variables: {},
-          ...(dryModel ? { model: dryModel } : {}),
-        }),
+        await api.dryRun(projectId, { action: config.action, variables: {} }),
       );
     } catch (err) {
       setDry({
@@ -352,24 +347,15 @@ function ActionRow({
 
           {projectId && (
             <div className="rounded-lg bg-slate-50 p-4">
-              <div className="mb-3 flex flex-wrap items-end gap-3">
-                <Field
-                  label="Тестовий запуск"
-                  hint="Справжній виклик моделі. Нічого не зберігається — ні пост, ні журнал; результат видно тільки тут."
-                >
-                  <Select value={dryModel} onChange={(e) => setDryModel(e.target.value)}>
-                    <option value="">Увесь ланцюжок</option>
-                    {models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.id}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
+              <div className="mb-3 flex flex-wrap items-center gap-3">
                 <Button variant="secondary" onClick={() => void runDry()} disabled={running}>
                   {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                  Запустити
+                  Тестовий запуск
                 </Button>
+                <p className="text-xs text-slate-500">
+                  Справжній виклик за налаштуваннями вище: промпт іде в першу модель, а якщо та
+                  зайнята чи впала — у наступну. Нічого не зберігається.
+                </p>
               </div>
 
               {dry && <DryRunPanel result={dry} />}

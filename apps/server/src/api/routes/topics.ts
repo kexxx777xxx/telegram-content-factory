@@ -14,6 +14,7 @@ import {
   TopicNotFoundError,
   updateTopicStatus,
 } from '../../services/topics.js';
+import { launchTopic, NotLaunchableError } from '../../services/publishNow.js';
 import { badRequest, firstIssue } from './helpers.js';
 
 export const topicsRouter: Router = Router();
@@ -150,4 +151,29 @@ topicsRouter.post('/topics/delete', async (req, res) => {
   const removed = await deleteTopics(parsed.data.ids);
   logger.info({ removed }, 'topics deleted');
   res.json({ removed });
+});
+
+/**
+ * Runs a topic the way the list runs a post.
+ *
+ * `publish: true` generates and publishes in one job; `false` only generates,
+ * putting the topic into the buffer ahead of its turn. Either way the topic
+ * stops being «без слоту» and becomes an ordinary post row.
+ */
+topicsRouter.post('/topics/:topicId/launch', async (req, res) => {
+  const params = z.object({ topicId: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) return badRequest(res, firstIssue(params.error));
+
+  const parsed = z.object({ publish: z.boolean().default(true) }).safeParse(req.body ?? {});
+  if (!parsed.success) return badRequest(res, firstIssue(parsed.error));
+
+  try {
+    res.status(202).json(await launchTopic(params.data.topicId, { publish: parsed.data.publish }));
+  } catch (err) {
+    if (err instanceof NotLaunchableError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 });
