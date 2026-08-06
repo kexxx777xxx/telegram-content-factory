@@ -51,10 +51,30 @@ export const COMMON_VARIABLES: PromptVariable[] = [
   },
   {
     name: 'maxChars',
-    meaning: 'Цільова довжина поста у видимих символах.',
+    meaning: 'Скільки символів лишається на текст: довжина поста мінус хештеги.',
     source: 'Проєкт → Огляд → Публікація → Довжина поста.',
   },
 ];
+
+/**
+ * Скільки символів лишається під сам текст.
+ *
+ * Ліміт стосується повідомлення, а хештеги — його частина: промпт просить
+ * дописати їх у кінці, тож пост виходив рівно на їхню довжину більшим за
+ * задане число. На типовому ліміті в 1024 це означало підпис, який не влазить
+ * у фото, і ще одне повідомлення під ним — з вини налаштування, яке нібито
+ * саме це й мало запобігти.
+ *
+ * Тут, а не на сервері, бо форма показує це число оператору поруч із полем, і
+ * два обчислення того самого розійшлися б при першій же правці.
+ *
+ * Мінімум — 200 символів, нижня межа самого поля: рядок хештегів довший за
+ * ліміт лишив би моделі бюджет нуль чи відʼємний.
+ */
+export function textBudget(postMaxChars: number, hashtags: string): number {
+  const tail = hashtags ? hashtags.length + 1 : 0;
+  return Math.max(200, postMaxChars - tail);
+}
 
 const TOPIC: PromptVariable = {
   name: 'topic',
@@ -91,9 +111,14 @@ export const ACTION_VARIABLES: Record<AiAction, PromptVariable[]> = {
       source: 'Результат дії «Текст поста».',
     },
   ],
-  // The drawing model receives the text produced by `image_prompt` directly, so
-  // this action has no prompt of its own to fill in.
-  image: [],
+  image: [
+    TOPIC,
+    {
+      name: 'imagePrompt',
+      meaning: 'Опис картинки, складений дією «Промпт для зображення».',
+      source: 'Результат попереднього кроку цієї ж групи.',
+    },
+  ],
 };
 
 /** Everything usable in one action: the channel-wide set plus its own. */

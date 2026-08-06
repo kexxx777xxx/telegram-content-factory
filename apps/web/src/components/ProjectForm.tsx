@@ -1,13 +1,14 @@
 import {
   TELEGRAM_CAPTION_LIMIT,
   TELEGRAM_MESSAGE_LIMIT,
+  textBudget,
   type ApiKeyDto,
   type ProjectDto,
   type ProjectInput,
   type ProjectUpdate,
   type Schedule,
 } from '@tcf/shared';
-import { Loader2, PlayCircle } from 'lucide-react';
+import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
@@ -23,8 +24,7 @@ export interface ProjectFormValue {
   imageStyle: string;
   hashtags: string;
   telegramChannelId: string;
-  /** Free text, one channel per line or comma-separated — same as hashtags. */
-  telegramMirrorChatIds: string;
+  telegramMirrorChatIds: string[];
   telegramBotToken: string;
   adminChatId: string;
   apiKeyId: string;
@@ -46,13 +46,14 @@ export function emptyForm(): ProjectFormValue {
     name: '',
     slug: '',
     status: 'paused',
-    timezone: 'Europe/Kyiv',
+    // Пояс браузера: той, у якому людина зараз думає про час публікацій.
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Kyiv',
     language: 'uk',
     persona: '',
     imageStyle: '',
     hashtags: '',
     telegramChannelId: '',
-    telegramMirrorChatIds: '',
+    telegramMirrorChatIds: [],
     telegramBotToken: '',
     adminChatId: '',
     apiKeyId: '',
@@ -81,7 +82,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     imageStyle: project.imageStyle,
     hashtags: project.hashtags.join(', '),
     telegramChannelId: project.telegramChannelId,
-    telegramMirrorChatIds: project.telegramMirrorChatIds.join(', '),
+    telegramMirrorChatIds: project.telegramMirrorChatIds,
     // Never prefilled: the server only ever returns a mask.
     telegramBotToken: '',
     adminChatId: project.adminChatId ?? '',
@@ -128,16 +129,10 @@ function common(form: ProjectFormValue) {
     language: form.language,
     persona: form.persona,
     imageStyle: form.imageStyle,
-    hashtags: form.hashtags
-      .split(/[,\s]+/)
-      .map((tag) => tag.trim().replace(/^#/, ''))
-      .filter(Boolean)
-      .map((tag) => `#${tag}`),
+    hashtags: hashtagList(form.hashtags),
     telegramChannelId: form.telegramChannelId.trim(),
-    telegramMirrorChatIds: form.telegramMirrorChatIds
-      .split(/[,\s]+/)
-      .map((id) => id.trim())
-      .filter(Boolean),
+    // Порожні рядки — це щойно доданий, ще не заповнений рядок списку.
+    telegramMirrorChatIds: form.telegramMirrorChatIds.map((id) => id.trim()).filter(Boolean),
     adminChatId: form.adminChatId.trim() || null,
     apiKeyId: form.apiKeyId || null,
     imageMode: form.imageMode,
@@ -162,6 +157,65 @@ function common(form: ProjectFormValue) {
 function sortSchedule(schedule: Schedule): Schedule {
   if (schedule.mode !== 'slots') return schedule;
   return { ...schedule, slots: [...schedule.slots].sort() };
+}
+
+/**
+ * Хештеги з вільного тексту у той самий вигляд, у якому їх бачить сервер.
+ *
+ * Один розбір на два місця: те, що піде в API, і те, з чого форма рахує
+ * залишок символів під текст. Два розбори розійшлися б, і показане число
+ * перестало б збігатися з тим, що отримує модель.
+ */
+function hashtagList(text: string): string[] {
+  return text
+    .split(/[,\s]+/)
+    .map((tag) => tag.trim().replace(/^#/, ''))
+    .filter(Boolean)
+    .map((tag) => `#${tag}`);
+}
+
+/**
+ * Дзеркала — рядок на канал, а не текст через кому.
+ *
+ * Кома в полі, куди пишуть `@channel` і `-100…`, — це формат, який треба
+ * памʼятати, і помилку в ньому видно лише після збереження. Список показує
+ * рівно те, що поїде в Telegram: скільки рядків — стільки копій поста.
+ */
+function MirrorList({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
+  return (
+    <Field
+      label="Дзеркала"
+      hint="Ті самі пости копіюються в ці канали одразу після публікації. Бот має бути адміністратором у кожному."
+    >
+      <div className="space-y-2">
+        {value.map((id, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <Input
+              value={id}
+              placeholder="@second_channel або -1001234567890"
+              onChange={(e) => onChange(value.map((v, j) => (j === i ? e.target.value : v)))}
+            />
+            <button
+              type="button"
+              aria-label="Прибрати дзеркало"
+              onClick={() => onChange(value.filter((_, j) => j !== i))}
+              className="rounded p-2 text-slate-400 hover:bg-slate-100"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange([...value, ''])}
+          className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-white"
+        >
+          <Plus className="size-4" />
+          Додати канал
+        </button>
+      </div>
+    </Field>
+  );
 }
 
 function slugify(name: string): string {
@@ -280,18 +334,25 @@ export function ProjectForm({
             />
           </Field>
 
-          <Field label="Часовий пояс" hint="Усі слоти рахуються в ньому.">
-            <Input
-              list="tz-list"
-              value={value.timezone}
-              onChange={(e) => set('timezone', e.target.value)}
-            />
-            <datalist id="tz-list">
-              {TIMEZONES.map((tz) => (
-                <option key={tz} value={tz} />
-              ))}
-            </datalist>
-          </Field>
+          {/*
+            При створенні поле не показуємо: береться пояс браузера, і в 99
+            випадках зі 100 він і потрібен. Питати його першим ділом означало
+            питати те, на що відповідь уже є.
+          */}
+          {mode === 'edit' && (
+            <Field label="Часовий пояс" hint="Усі слоти рахуються в ньому.">
+              <Input
+                list="tz-list"
+                value={value.timezone}
+                onChange={(e) => set('timezone', e.target.value)}
+              />
+              <datalist id="tz-list">
+                {TIMEZONES.map((tz) => (
+                  <option key={tz} value={tz} />
+                ))}
+              </datalist>
+            </Field>
+          )}
         </div>
       </Card>
       )}
@@ -392,29 +453,12 @@ export function ProjectForm({
             />
           </Field>
 
-          <Field
-            label="Дзеркала"
-            hint="Ще канали, куди копіювати той самий пост. Через кому. Бот має бути адміном у кожному."
-          >
-            <Textarea
-              rows={2}
-              value={value.telegramMirrorChatIds}
-              placeholder="@second_channel, -1001234567890"
-              onChange={(e) => set('telegramMirrorChatIds', e.target.value)}
-            />
-          </Field>
-
-          <Field
-            label="Адмін-чат"
-            hint="Куди слати алерти й картки апруву. Необовʼязково."
-          >
-            <Input
-              value={value.adminChatId}
-              placeholder="-1001234567890"
-              onChange={(e) => set('adminChatId', e.target.value)}
-            />
-          </Field>
         </div>
+
+        <MirrorList
+          value={value.telegramMirrorChatIds}
+          onChange={(next) => set('telegramMirrorChatIds', next)}
+        />
       </Card>
       )}
 
@@ -476,11 +520,12 @@ export function ProjectForm({
             label="Довжина поста, символів"
             hint={
               <>
-                Довжина всього повідомлення, <b>разом із хештегами</b>: у промпт як{' '}
-                <VarTag name="maxChars" /> іде це число мінус рядок хештегів, щоб пост не вилазив
-                за ліміт рівно на їхню довжину. До {TELEGRAM_CAPTION_LIMIT} текст іде підписом під
-                фото; довший Telegram підписом не приймає, тож поїде окремим повідомленням одразу
-                за зображенням.
+                Разом із хештегами. На сам текст лишається{' '}
+                <b>{textBudget(value.postMaxChars, hashtagList(value.hashtags).join(' '))}</b> —
+                саме це число йде в
+                промпт як <VarTag name="maxChars" />. До {TELEGRAM_CAPTION_LIMIT} пост іде підписом
+                під фото; довший Telegram підписом не приймає, тож поїде окремим повідомленням
+                одразу за зображенням.
               </>
             }
           >

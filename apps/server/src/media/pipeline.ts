@@ -5,6 +5,7 @@ import { providers } from '../ai/gemini.js';
 import { resolveKey } from '../ai/keys.js';
 import { record } from '../services/activityLog.js';
 import { projectVariables } from '../prompts/variables.js';
+import { renderPrompt, resolvePrompt } from '../prompts/resolve.js';
 import { acquire, openCircuit, recordUsage } from '../ai/rateLimiter.js';
 import { LlmError } from '../ai/provider.js';
 import type { Project } from '../db/schema.js';
@@ -169,6 +170,20 @@ async function generateWithImageModel(
     throw new ChainMissingError('Для дії «image» не налаштовано жодної моделі');
   }
 
+  /*
+   * Промпт кроку малювання — це шаблон навколо опису, а не сам опис. За
+   * замовчуванням у ньому лише `{{imagePrompt}}`, тож нічого не змінюється;
+   * але саме сюди дописують те, що стосується кожного зображення каналу
+   * («без тексту на картинці», «вертикальний кадр») — інакше таке доводилось
+   * би вписувати в промпт опису й сподіватись, що модель його перекаже.
+   */
+  const template = await resolvePrompt('image', project.id, null);
+  const drawPrompt = renderPrompt(template.body, {
+    ...(await projectVariables(project)),
+    imagePrompt: promptResult.text,
+    topic: post.topicTitle ?? '',
+  });
+
   let lastError: LlmError | null = null;
 
   for (const step of chain.steps) {
@@ -194,7 +209,7 @@ async function generateWithImageModel(
       try {
         const image = await provider.generateImage(key.secret, {
           model: step.model,
-          prompt: promptResult.text,
+          prompt: drawPrompt,
         });
         await recordUsage(key.id, step.model, image.usage);
 

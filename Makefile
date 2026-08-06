@@ -11,11 +11,16 @@ DEV := docker compose -f docker-compose.yml -f docker-compose.dev.yml
 ## Міграції тут не для тестів — вони ганяються на власній базі й пройдуть у
 ## будь-якому разі. Вони для робочої: зміна в schema.ts, яку ніхто не застосував,
 ## лишає запущений `npm run dev` із 500 на кожен запит, і зелені тести це ховають.
+##
+## `build` — з тієї ж причини: сервер на :3000 віддає зібраний бандл із
+## apps/web/dist, і без перезбірки там лишається вчорашній інтерфейс. Правку
+## видно у Vite на :5173, а на :3000 — ні, і це виглядає як «нічого не змінилось».
 check:
 	docker compose up -d db
 	npm run db:migrate
 	npm run typecheck
 	npm test
+	npm run build
 	@git diff --cached --name-only | grep -qE '^(app\.env$$|.*\.(key|pem|dump|sql\.gz)$$)' \
 		&& { echo '!! секрет або дамп у індексі — прибрати перед комітом'; exit 1; } || true
 

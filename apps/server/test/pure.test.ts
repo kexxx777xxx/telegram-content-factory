@@ -11,7 +11,7 @@ import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 import { MIN_REFILL_BATCH, refillCount } from '../src/services/ideas.js';
-import { textBudget } from '../src/prompts/variables.js';
+import { textBudget } from '@tcf/shared';
 
 /** Everything here is pure — no database, no network. */
 

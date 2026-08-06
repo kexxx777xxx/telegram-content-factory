@@ -1,3 +1,4 @@
+import { textBudget } from '@tcf/shared';
 import type { Project } from '../db/schema.js';
 import { resolveStyle } from '../services/settings.js';
 
@@ -26,21 +27,4 @@ export async function projectVariables(
     style: await resolveStyle(project.imageStyle),
     maxChars: textBudget(project.postMaxChars, hashtags),
   };
-}
-
-/**
- * Скільки символів лишається під сам текст.
- *
- * Ліміт стосується повідомлення, а хештеги — його частина: промпт просить
- * дописати їх у кінці, тож пост виходив рівно на їхню довжину більшим за
- * задане число. На типовому ліміті в 1024 це означало підпис, який не влазить
- * у фото, і ще одне повідомлення під ним — з вини налаштування, яке нібито
- * саме це й мало запобігти.
- *
- * Мінімум — 200 символів, нижня межа самого поля: рядок хештегів довший за
- * ліміт лишив би моделі бюджет нуль чи від'ємний.
- */
-export function textBudget(postMaxChars: number, hashtags: string): number {
-  const tail = hashtags ? hashtags.length + 1 : 0;
-  return Math.max(200, postMaxChars - tail);
 }
