@@ -38,6 +38,7 @@ import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.j
 import { listPosts, resetForRegeneration } from '../src/services/posts.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
 import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
+import { saveActionConfig } from '../src/services/generationConfig.js';
 
 /**
  * These run against real Postgres because the guarantees being tested *are*
@@ -839,6 +840,35 @@ describe('prompt resolution', () => {
     const [old] = await db.select().from(prompts).where(eq(prompts.id, first.id));
     expect(old!.body).toBe('v1');
   });
+
+  it('порожнє поле у проєкті повертає глобальний промпт, а не зберігає порожній', async () => {
+    // У формі глобальний текст стоїть плейсхолдером, тож очистити поле — це те,
+    // як оператор відмовляється від власної версії. Якби порожнє тіло
+    // збереглося, генерація пішла б у модель без жодної інструкції.
+    await db.delete(prompts);
+    await ensureDefaultPrompts();
+    const project = await makeProject();
+
+    await saveActionConfig('post_text', project.id, { promptBody: 'лише для цього проєкту' });
+    expect((await resolvePrompt('post_text', project.id, null)).scope).toBe('project');
+
+    await saveActionConfig('post_text', project.id, { promptBody: '   ' });
+
+    const back = await resolvePrompt('post_text', project.id, null);
+    expect(back.scope).toBe('global');
+    expect(back.body).toBe(DEFAULT_PROMPTS.post_text);
+  });
+
+  it('глобальний промпт не можна стерти порожнім полем', async () => {
+    // Глобальному нема на що відкотитись: порожній текст зупинив би генерацію
+    // в усіх проєктах одразу.
+    await db.delete(prompts);
+    await ensureDefaultPrompts();
+
+    await saveActionConfig('post_text', null, { promptBody: '' });
+
+    expect((await resolvePrompt('post_text', null, null)).body).toBe(DEFAULT_PROMPTS.post_text);
+  });
 });
 
 describe('topic bank', () => {
@@ -958,7 +988,9 @@ describe('prompt variables', () => {
       persona: 'Практик',
       language: 'uk',
       hashtags: '#arch #db',
-      maxChars: 700,
+      // Не 700: ліміт стосується всього повідомлення, а хештеги в нього входять,
+      // тож моделі дістається залишок під сам текст.
+      maxChars: 700 - '#arch #db'.length - 1,
     });
     // Style falls through the same chain resolveStyle owns.
     expect(vars.style).toBe(BUILTIN_STYLE);

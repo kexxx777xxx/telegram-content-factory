@@ -117,9 +117,18 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
   const [keys, setKeys] = useState<ApiKeyDto[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  /** Глобальні промпти — те, що стоїть плейсхолдером у порожньому полі проєкту. */
+  const [basePrompts, setBasePrompts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     void api.getGenerationConfig(projectId).then(setConfigs);
+    if (projectId) {
+      void api
+        .getGenerationConfig()
+        .then((globals) =>
+          setBasePrompts(Object.fromEntries(globals.map((c) => [c.action, c.prompt.body]))),
+        );
+    }
     api
       .listModels()
       .then(setModels)
@@ -164,6 +173,7 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
               configs={groupConfigs}
               models={models}
               keys={keys}
+              basePrompts={basePrompts}
               projectId={projectId}
               expanded={open === group.key}
               onToggle={() => setOpen(open === group.key ? null : group.key)}
@@ -181,6 +191,7 @@ function GroupRow({
   configs,
   models,
   keys,
+  basePrompts,
   projectId,
   expanded,
   onToggle,
@@ -190,6 +201,7 @@ function GroupRow({
   configs: ActionConfig[];
   models: ModelInfo[];
   keys: ApiKeyDto[];
+  basePrompts: Record<string, string>;
   projectId?: string;
   expanded: boolean;
   onToggle: () => void;
@@ -249,6 +261,7 @@ function GroupRow({
                 note={meta.note}
                 models={models}
                 keys={keys}
+                basePrompt={basePrompts[config.action] ?? ''}
                 projectId={projectId}
                 onSaved={onSaved}
               />
@@ -279,11 +292,14 @@ function KeyChip({
   const key = keys.find((k) => k.id === keyId);
   if (!key) return <span className="text-xs text-slate-400">{label ?? 'ключа немає'}</span>;
 
+  // Один значок замість двох: batch буває лише на платному тарифі, тож
+  // «paid» поруч із «batch» повторював те саме іншими літерами.
   return (
     <span className="flex items-center gap-1 text-xs text-slate-600">
       {key.label}
-      <Badge tone={key.tier === 'paid' ? 'amber' : 'neutral'}>{key.tier}</Badge>
-      {key.batchEnabled && <Badge tone="amber">batch</Badge>}
+      <Badge tone={key.tier === 'paid' ? 'amber' : 'neutral'}>
+        {key.batchEnabled ? 'batch' : key.tier}
+      </Badge>
       {!key.enabled && <Badge tone="red">вимкнено</Badge>}
     </span>
   );
@@ -295,6 +311,7 @@ function ActionEditor({
   note,
   models,
   keys,
+  basePrompt,
   projectId,
   onSaved,
 }: {
@@ -304,11 +321,20 @@ function ActionEditor({
   note?: string;
   models: ModelInfo[];
   keys: ApiKeyDto[];
+  /** Глобальний промпт цієї дії; у проєкті стоїть плейсхолдером. Порожній у глобальному режимі. */
+  basePrompt: string;
   projectId?: string;
   onSaved: (next: ActionConfig[]) => void;
 }) {
+  /*
+   * У проєкті поле порожнє, поки промпт успадкований, а базовий текст видно
+   * плейсхолдером. Підставляти глобальний текст у саме поле означало, що
+   * «зберегти» після будь-якої дрібної правки поруч робило копію глобального
+   * промпта — і та копія переставала оновлюватись разом з оригіналом.
+   */
+  const ownPrompt = config.promptInherited ? '' : config.prompt.body;
   const [steps, setSteps] = useState<ChainStepInput[]>(config.steps);
-  const [promptBody, setPromptBody] = useState(config.prompt.body);
+  const [promptBody, setPromptBody] = useState(ownPrompt);
   const [apiKeyId, setApiKeyId] = useState<string | null>(config.apiKeyId);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -317,13 +343,13 @@ function ActionEditor({
 
   useEffect(() => {
     setSteps(config.steps);
-    setPromptBody(config.prompt.body);
+    setPromptBody(config.promptInherited ? '' : config.prompt.body);
     setApiKeyId(config.apiKeyId);
   }, [config]);
 
   const hasPrompt = !PROMPTLESS.includes(config.action);
   const dirty =
-    (hasPrompt && promptBody !== config.prompt.body) ||
+    (hasPrompt && promptBody !== ownPrompt) ||
     apiKeyId !== config.apiKeyId ||
     JSON.stringify(steps) !== JSON.stringify(config.steps);
 
@@ -348,8 +374,10 @@ function ActionEditor({
     if (!projectId) return;
     setSaving(true);
     try {
+      // Тільки ланцюжок і ключ: промпт повертається очищенням свого поля, і
+      // забрати заразом чужу правку тексту було б несподіванкою.
       onSaved(
-        await api.clearGenerationOverride(config.action, projectId, { chain: true, prompt: true }),
+        await api.clearGenerationOverride(config.action, projectId, { chain: true, prompt: false }),
       );
     } finally {
       setSaving(false);
@@ -379,8 +407,7 @@ function ActionEditor({
     }
   }
 
-  const overridden =
-    projectId && (!config.chainInherited || !config.promptInherited || config.apiKeyId !== null);
+  const overridden = projectId && (!config.chainInherited || config.apiKeyId !== null);
 
   return (
     <div className="space-y-4">
@@ -398,51 +425,59 @@ function ActionEditor({
         onChange={setSteps}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field
-          label="Яким ключем платимо"
-          hint={
-            apiKeyId === null
-              ? KEY_LEVEL_LABELS[config.keyLevel]
-              : 'Закріплено за цим ключем: він не зміниться, навіть якщо дефолтним у налаштуваннях стане інший.'
-          }
-        >
-          <Select value={apiKeyId ?? ''} onChange={(e) => setApiKeyId(e.target.value || null)}>
-            <option value="">
-              {projectId
-                ? 'Як у проєкті (а якщо там не вибрано — дефолтний)'
-                : 'Дефолтний (який позначено в налаштуваннях)'}
-            </option>
-            {keys
-              .filter((k) => k.enabled)
-              .map((k) => (
-                <option key={k.id} value={k.id}>
-                  {keyName(k)}
-                </option>
-              ))}
-          </Select>
-        </Field>
-
-        <div className="self-end pb-2 text-sm">
-          <span className="text-slate-500">Зараз платить: </span>
-          <KeyChip keyId={config.keyId} label={config.keyLabel} keys={keys} />
-        </div>
-      </div>
+      {/*
+        Один рядок, а не два: назва ключа, його тариф і те, звідки він узявся —
+        одна відповідь на одне питання. Три місця з тим самим «paid» поруч
+        читались як три різні факти.
+      */}
+      <Field
+        label="Ключ"
+        hint={
+          apiKeyId === null
+            ? `Обирається автоматично: ${KEY_LEVEL_LABELS[config.keyLevel]}. Зміниться разом із налаштуваннями.`
+            : 'Закріплено: не зміниться, навіть якщо дефолтним у налаштуваннях стане інший.'
+        }
+      >
+        <Select value={apiKeyId ?? ''} onChange={(e) => setApiKeyId(e.target.value || null)}>
+          <option value="">
+            {config.keyLabel
+              ? `Авто — ${config.keyLabel} (${KEY_LEVEL_LABELS[config.keyLevel]})`
+              : 'Авто — жодного ключа не знайдено'}
+          </option>
+          {keys
+            .filter((k) => k.enabled)
+            .map((k) => (
+              <option key={k.id} value={k.id}>
+                {keyName(k)}
+              </option>
+            ))}
+        </Select>
+      </Field>
 
       {hasPrompt ? (
         <div className="space-y-2">
           <Field
             label="Промпт"
             hint={
-              <>
-                Зберігається новою версією, стара лишається: опублікований пост посилається на ту
-                версію, що його породила. Поточна: {config.prompt.scope} v{config.prompt.version}.
-              </>
+              projectId ? (
+                <>
+                  Порожнє поле — працює глобальний промпт (він і стоїть підказкою). Пишіть сюди
+                  лише те, що для цього проєкту має бути інакше; щоб повернутись до глобального,
+                  очистіть поле і збережіть. Поточний: {config.prompt.scope} v
+                  {config.prompt.version}.
+                </>
+              ) : (
+                <>
+                  Зберігається новою версією, стара лишається: опублікований пост посилається на ту
+                  версію, що його породила. Поточна: {config.prompt.scope} v{config.prompt.version}.
+                </>
+              )
             }
           >
             <Textarea
               rows={10}
               value={promptBody}
+              placeholder={basePrompt}
               className="font-mono text-xs"
               onChange={(e) => setPromptBody(e.target.value)}
             />
@@ -468,7 +503,7 @@ function ActionEditor({
           {overridden && (
             <Button variant="secondary" onClick={() => void revert()} disabled={saving}>
               <RotateCcw className="size-4" />
-              Повернути до глобальних
+              Моделі й ключ — як у глобальних
             </Button>
           )}
           {projectId && (
@@ -551,7 +586,7 @@ function ChainEditor({
         <span className="text-sm font-medium text-slate-700">Основна модель</span>
         <InfoHint>
           Моделі пробуються згори вниз. Крок, заблокований після 429 або недоступний,
-          пропускається миттєво — наступний отримує той самий промпт. Число праворуч — температура.
+          пропускається миттєво — наступний отримує той самий промпт.
         </InfoHint>
       </div>
 
@@ -649,12 +684,12 @@ function StepRow({
   const known = usable.some((m) => m.id === step.model);
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-      <span className="w-6 text-xs text-slate-400">{index + 1}.</span>
+    <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+      <span className="w-6 shrink-0 text-xs text-slate-400">{index + 1}.</span>
 
       <Select
         value={step.model}
-        className="w-auto min-w-64 flex-1"
+        className="w-auto min-w-0 flex-1"
         onChange={(e) => onChange({ ...step, model: e.target.value })}
       >
         {!known && step.model && <option value={step.model}>{step.model} (немає в каталозі)</option>}
@@ -667,28 +702,7 @@ function StepRow({
         ))}
       </Select>
 
-      <Input
-        type="number"
-        step="0.1"
-        min={0}
-        max={2}
-        placeholder="t°"
-        className="w-20"
-        value={step.params.temperature ?? ''}
-        onChange={(e) =>
-          onChange({
-            ...step,
-            params: {
-              ...step.params,
-              ...(e.target.value === ''
-                ? { temperature: undefined }
-                : { temperature: Number(e.target.value) }),
-            },
-          })
-        }
-      />
-
-      <div className="flex items-center gap-0.5">
+      <div className="flex shrink-0 items-center gap-0.5">
         <button
           type="button"
           aria-label="Вище"

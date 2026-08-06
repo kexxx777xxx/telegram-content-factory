@@ -11,6 +11,7 @@ import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 import { MIN_REFILL_BATCH, refillCount } from '../src/services/ideas.js';
+import { textBudget } from '../src/prompts/variables.js';
 
 /** Everything here is pure — no database, no network. */
 
@@ -350,5 +351,22 @@ describe('topic refill', () => {
     // 49 of 50 needs one topic; asking for one would burn a request and hit the
     // same threshold again tomorrow.
     expect(refillCount(49, 50)).toBe(MIN_REFILL_BATCH);
+  });
+});
+
+describe('бюджет символів під текст', () => {
+  it('віднімає рядок хештегів разом із пробілом перед ним', () => {
+    // 1024 — ліміт підпису під фото: пост із хвостом хештегів рівно на їхню
+    // довжину не влазив у нього і їхав другим повідомленням.
+    expect(textBudget(1024, '#їжа #рецепт')).toBe(1024 - '#їжа #рецепт'.length - 1);
+  });
+
+  it('без хештегів віддає весь ліміт', () => {
+    expect(textBudget(1024, '')).toBe(1024);
+  });
+
+  it('не опускається нижче нижньої межі поля', () => {
+    // Рядок хештегів довший за ліміт лишив би моделі нуль або від'ємне число.
+    expect(textBudget(220, '#' + 'а'.repeat(300))).toBe(200);
   });
 });

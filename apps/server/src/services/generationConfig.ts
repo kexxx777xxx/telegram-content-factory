@@ -134,13 +134,24 @@ export async function saveActionConfig(
   }
 
   if (input.promptBody !== undefined) {
-    await savePromptVersion({
-      action,
-      scope: projectId ? 'project' : 'global',
-      projectId,
-      model: null,
-      body: input.promptBody,
-    });
+    /*
+     * Порожнє поле у проєкті означає «беремо глобальний», а не «промпт без
+     * тексту»: у формі глобальний текст стоїть плейсхолдером, тож очистити
+     * поле — це природний спосіб відмовитись від власної версії. Глобальний
+     * промпт порожнім лишити не можна: він нічим не підстраховується, і
+     * порожній текст зупинив би генерацію в усіх проєктах одразу.
+     */
+    if (!input.promptBody.trim()) {
+      if (projectId) await clearPromptOverride(action, 'project', projectId, null);
+    } else {
+      await savePromptVersion({
+        action,
+        scope: projectId ? 'project' : 'global',
+        projectId,
+        model: null,
+        body: input.promptBody,
+      });
+    }
   }
 }
 
