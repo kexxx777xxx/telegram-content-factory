@@ -278,7 +278,14 @@ export const posts = pgTable(
     imagePath: text('image_path'),
     imageKind: text('image_kind'),
 
+    /**
+     * Set the moment Telegram accepts the photo, not at the end of publishing.
+     * A retry after a failed follow-up message reads it and skips the photo —
+     * without that the channel gets the image twice.
+     */
     tgMessageId: integer('tg_message_id'),
+    /** Follow-up messages already delivered, for the same reason. */
+    tgExtraMessageIds: integer('tg_extra_message_ids').array(),
     permalink: text('permalink'),
 
     /** Compact: model, prompt_id@version, tokens, attempts. Never raw content. */

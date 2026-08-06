@@ -85,7 +85,7 @@ export function backoffSeconds(attempts: number): number {
  * and the "exponential" part would be decorative. The random tail spreads jobs
  * that failed together in the same outage.
  */
-export async function failJob(id: string, error: string, terminal: boolean): Promise<'failed' | 'dead'> {
+export async function failJob(id: string, error: string, terminal: boolean): Promise<'pending' | 'dead'> {
   const jitter = Math.floor(Math.random() * 10);
   const result: unknown = await db.execute(sql`
     update ${jobs} set
@@ -107,7 +107,10 @@ export async function failJob(id: string, error: string, terminal: boolean): Pro
     returning status
   `);
 
-  return extractRows<{ status: 'failed' | 'dead' }>(result)[0]?.status ?? 'dead';
+  // `pending` means "will be retried after the backoff"; the row never passes
+  // through a `failed` status, so reporting one would be a state that does not
+  // exist.
+  return extractRows<{ status: 'pending' | 'dead' }>(result)[0]?.status ?? 'dead';
 }
 
 /**

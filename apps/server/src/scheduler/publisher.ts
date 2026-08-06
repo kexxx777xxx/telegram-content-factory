@@ -162,7 +162,14 @@ export async function reclaimStuckGenerating(olderThanMs: number): Promise<numbe
   return rows.length;
 }
 
-/** Posts sitting in `publishing` longer than any send could take. */
+/**
+ * Posts sitting in `publishing` longer than any send could take.
+ *
+ * Safe to retry because publishing resumes rather than restarts: a worker that
+ * died after Telegram accepted the photo left the message id on the row, so the
+ * re-run skips it and sends only what is missing. Before that, this reclaim was
+ * itself a way to get the same image posted twice.
+ */
 export async function reclaimStuckPublishing(olderThanMs: number): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs);
   const rows = await db

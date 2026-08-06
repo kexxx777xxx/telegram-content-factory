@@ -30,6 +30,14 @@ const FORBIDDEN_ELEMENTS = new Set([
   'image', // raster payloads have no place in a vector schematic
 
   /*
+   * CSS reaches outside the document in ways the attribute pass cannot see: it
+   * only inspects attribute values, and `@import url(…)` or `fill: url(http://…)`
+   * live in a text node. A flat schematic needs no stylesheet, so the element
+   * goes rather than the rules being parsed.
+   */
+  'style',
+
+  /*
    * Filters are removed because of what they do to the *renderer*, not to the
    * browser. A model emitted a `<feDisplacementMap>` whose source and map had
    * different sizes; resvg asserts on that in Rust, and a Rust panic inside a

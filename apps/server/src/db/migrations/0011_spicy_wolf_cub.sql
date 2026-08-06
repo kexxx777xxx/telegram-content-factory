@@ -1,0 +1,1 @@
+ALTER TABLE "posts" ADD COLUMN "tg_extra_message_ids" integer[];

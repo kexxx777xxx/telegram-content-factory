@@ -26,12 +26,21 @@ export async function runPrune(): Promise<PruneReport> {
     .where(sql`${events.createdAt} < now() - make_interval(days => ${eventDays})`)
     .returning({ id: events.id });
 
+  /*
+   * At least a day, whatever the setting says. The daily prune and backup are
+   * kept to once a day by looking for a `prune:<date>` row in `jobs` across all
+   * statuses — so a retention of 0 would delete today's own row seconds after it
+   * finished, and the next planner tick would queue another. A daily task would
+   * run every sixty seconds, taking the backup upload with it.
+   */
+  const jobCutoffDays = Math.max(jobDays, 1);
+
   const prunedJobs = await db
     .delete(jobs)
     .where(
       and(
         inArray(jobs.status, ['done']),
-        sql`${jobs.updatedAt} < now() - make_interval(days => ${jobDays})`,
+        sql`${jobs.updatedAt} < now() - make_interval(days => ${jobCutoffDays})`,
       ),
     )
     .returning({ id: jobs.id });

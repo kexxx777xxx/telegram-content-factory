@@ -365,6 +365,13 @@ export async function resetForRegeneration(id: string, keepTopic: boolean): Prom
       imagePath: null,
       imageKind: null,
       svgSource: null,
+      /*
+       * Cleared, or the fresh post would inherit the previous attempt's resume
+       * trail and skip sending its own photo — publishing a new text under an
+       * old image.
+       */
+      tgMessageId: null,
+      tgExtraMessageIds: null,
       error: null,
       ...(keepTopic ? {} : { topicId: null, topicTitle: null }),
       updatedAt: new Date(),

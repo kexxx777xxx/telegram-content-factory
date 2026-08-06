@@ -6,6 +6,8 @@ import { fallbackSvg } from '../src/media/svg/fallback.js';
 import { normalizeTopic } from '../src/services/topics.js';
 import { computeSlots, projectJitterSeconds } from '../src/scheduler/slots.js';
 import { buildPermalink } from '../src/telegram/permalink.js';
+import { splitForMessages } from '../src/telegram/publisher.js';
+import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 import { MIN_REFILL_BATCH, refillCount } from '../src/services/topics.js';
@@ -48,6 +50,70 @@ describe('Telegram HTML sanitizer', () => {
   it('counts length the way Telegram does — entities excluded', () => {
     expect(visibleLength('<b>Привіт</b>, світ!')).toBe('Привіт, світ!'.length);
   });
+
+  /*
+   * Telegram's limits are in UTF-16 code units, so an emoji costs two. Counting
+   * code points made a caption look shorter than Telegram measures it, and the
+   * send was rejected at the slot.
+   */
+  it('counts an emoji as the two units Telegram charges for it', () => {
+    expect(visibleLength('👍')).toBe(2);
+    expect(visibleLength('<b>Привіт</b> 👍🎉')).toBe('Привіт 👍🎉'.length);
+  });
+
+  it('does not double-escape entities the model already wrote', () => {
+    expect(clean('Tom &amp; Jerry')).toBe('Tom &amp; Jerry');
+    expect(clean('a &lt;b&gt; c')).toBe('a &lt;b&gt; c');
+  });
+
+  it('still escapes a bare ampersand', () => {
+    expect(clean('R&D')).toBe('R&amp;D');
+    expect(clean('a & b &copy; c')).toBe('a &amp; b &amp;copy; c');
+  });
+});
+
+describe('splitting a long post into messages', () => {
+  const within = (parts: string[]) =>
+    parts.every((part) => visibleLength(part) <= TELEGRAM_MESSAGE_LIMIT);
+
+  it('keeps a short post whole', () => {
+    expect(splitForMessages('коротко')).toEqual(['коротко']);
+  });
+
+  it('breaks on paragraph boundaries', () => {
+    const paragraph = `${'а'.repeat(3000)}`;
+    const parts = splitForMessages(`${paragraph}\n\n${paragraph}`);
+    expect(parts).toHaveLength(2);
+    expect(within(parts)).toBe(true);
+  });
+
+  /*
+   * The case that used to escape: one paragraph longer than the limit has no
+   * boundary to break on, so it went out whole and Telegram rejected it.
+   */
+  it('breaks up a single paragraph that exceeds the limit on its own', () => {
+    const sentence = `${'слово '.repeat(200)}кінець. `;
+    const parts = splitForMessages(sentence.repeat(6));
+    expect(parts.length).toBeGreaterThan(1);
+    expect(within(parts)).toBe(true);
+  });
+
+  it('falls back to word boundaries when sentences are still too long', () => {
+    const parts = splitForMessages(`${'слово '.repeat(2000)}`);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(within(parts)).toBe(true);
+  });
+
+  it('refuses rather than truncate when there is no seam at all', () => {
+    expect(() => splitForMessages('я'.repeat(TELEGRAM_MESSAGE_LIMIT + 1))).toThrow(/розбити/);
+  });
+
+  it('loses no text', () => {
+    const text = Array.from({ length: 20 }, (_, i) => `Абзац ${i}. ${'текст '.repeat(150)}`).join('\n\n');
+    const parts = splitForMessages(text);
+    expect(within(parts)).toBe(true);
+    expect(parts.join(' ').replace(/\s+/g, ' ')).toBe(text.replace(/\s+/g, ' '));
+  });
 });
 
 describe('SVG sanitizer', () => {
@@ -80,6 +146,19 @@ describe('SVG sanitizer', () => {
     const result = sanitizeSvg(wrap('<rect/><script>x</script><image href="http://e/x.png"/>'));
     expect(result.svg).not.toContain('script');
     expect(result.svg).not.toContain('<image');
+  });
+
+  /*
+   * The attribute pass only sees attribute values; a stylesheet reaches outside
+   * the document from inside a text node, where it never looked.
+   */
+  it('removes stylesheets, which the attribute pass cannot inspect', () => {
+    const result = sanitizeSvg(
+      wrap('<style>@import url(http://evil/x.css); rect { fill: url(http://evil/y) }</style><rect/>'),
+    );
+    expect(result.removed).toContain('style');
+    expect(result.svg).not.toContain('evil');
+    expect(result.svg).toContain('<rect');
   });
 
   it('enforces the no-text rule structurally', () => {

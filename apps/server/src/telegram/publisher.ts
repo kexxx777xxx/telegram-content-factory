@@ -15,6 +15,25 @@ export interface PublishInput {
   imagePath: string | null;
   /** Used only for pacing; a stable per-project key. */
   botKey: string;
+  /**
+   * What a previous, interrupted run of this same post already delivered.
+   * Anything listed here is skipped instead of sent again.
+   */
+  alreadySent?: SentSoFar;
+  /**
+   * Called after every accepted send, before the next one is attempted. The
+   * caller persists it, which is what makes a resumed publish skip the right
+   * parts — see the note on `publishPost`.
+   */
+  onProgress?: (progress: SentSoFar) => Promise<void>;
+}
+
+/** Message ids Telegram has already accepted for one post. */
+export interface SentSoFar {
+  /** The photo, and the permalink anchor. */
+  messageId: number | null;
+  /** Follow-up text messages, in order. */
+  extraMessageIds: number[];
 }
 
 export interface PublishResult {
@@ -34,31 +53,62 @@ interface TelegramMessage {
  * photo but 4096 in a message, and posts routinely land in between. Rather than
  * truncate the author's text, a long post goes out as photo-then-message, and
  * the permalink points at the photo so the link opens on the image.
+ *
+ * That split is also why this function is resumable. A post going out in more
+ * than one piece has no single call to retry: if the photo lands and the
+ * follow-up message hits a `retry_after`, the queue reschedules and runs the
+ * whole publish again. Without a record of what already arrived, the retry
+ * would repost the photo — the channel would show it twice, and the permalink
+ * would point at the second copy while the first hung there orphaned. So every
+ * accepted send is reported through `onProgress` *before* the next one is
+ * attempted, and `alreadySent` makes the next run skip it.
  */
 export async function publishPost(input: PublishInput): Promise<PublishResult> {
   const length = visibleLength(input.textHtml);
   const fitsCaption = length <= TELEGRAM_CAPTION_LIMIT;
+  const sent: SentSoFar = {
+    messageId: input.alreadySent?.messageId ?? null,
+    extraMessageIds: [...(input.alreadySent?.extraMessageIds ?? [])],
+  };
+
+  const advance = async (): Promise<void> => {
+    if (input.onProgress) await input.onProgress({ ...sent, extraMessageIds: [...sent.extraMessageIds] });
+  };
 
   if (!input.imagePath) {
+    // Text-only posts are a single call, so there is nothing to resume: either
+    // the one message is already recorded, or it still has to be sent.
+    if (sent.messageId !== null) return { messageId: sent.messageId, extraMessageIds: [] };
     const message = await sendMessage(input, input.textHtml);
+    sent.messageId = message.message_id;
+    await advance();
     return { messageId: message.message_id, extraMessageIds: [] };
   }
 
-  const photo = await sendPhoto(input, fitsCaption ? input.textHtml : undefined);
+  if (sent.messageId === null) {
+    const photo = await sendPhoto(input, fitsCaption ? input.textHtml : undefined);
+    sent.messageId = photo.message_id;
+    await advance();
+  } else {
+    logger.info({ messageId: sent.messageId }, 'photo already delivered by an earlier attempt, skipping');
+  }
 
-  if (fitsCaption) return { messageId: photo.message_id, extraMessageIds: [] };
+  if (fitsCaption) return { messageId: sent.messageId, extraMessageIds: sent.extraMessageIds };
 
-  const extras: number[] = [];
-  for (const chunk of splitForMessages(input.textHtml)) {
+  // Chunking is deterministic on the same text, so the count of delivered
+  // messages is enough to know where to resume.
+  const chunks = splitForMessages(input.textHtml);
+  for (const chunk of chunks.slice(sent.extraMessageIds.length)) {
     const message = await sendMessage(input, chunk);
-    extras.push(message.message_id);
+    sent.extraMessageIds.push(message.message_id);
+    await advance();
   }
 
   logger.info(
-    { chars: length, parts: extras.length + 1 },
+    { chars: length, parts: sent.extraMessageIds.length + 1 },
     'post exceeded caption limit, sent as photo plus message',
   );
-  return { messageId: photo.message_id, extraMessageIds: extras };
+  return { messageId: sent.messageId, extraMessageIds: sent.extraMessageIds };
 }
 
 async function sendPhoto(input: PublishInput, caption?: string): Promise<TelegramMessage> {
@@ -93,18 +143,81 @@ async function sendMessage(input: PublishInput, text: string): Promise<TelegramM
  * Splits on paragraph boundaries so a message never breaks mid-tag — Telegram
  * rejects unbalanced HTML, and a naive character split would produce exactly
  * that.
+ *
+ * Paragraphs are the preferred seam, not the only one: a single paragraph can
+ * itself exceed the limit, and emitting it whole would hand Telegram a message
+ * it rejects — the very failure this function exists to prevent. Such a
+ * paragraph is broken down further, on the widest seam that still fits.
  */
-function splitForMessages(html: string): string[] {
+export function splitForMessages(html: string): string[] {
   if (visibleLength(html) <= TELEGRAM_MESSAGE_LIMIT) return [html];
 
   const parts: string[] = [];
   let current = '';
 
+  const flush = (): void => {
+    if (current) parts.push(current);
+    current = '';
+  };
+
   for (const paragraph of html.split(/\n{2,}/)) {
     const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (visibleLength(candidate) <= TELEGRAM_MESSAGE_LIMIT) {
+      current = candidate;
+      continue;
+    }
+
+    flush();
+
+    if (visibleLength(paragraph) <= TELEGRAM_MESSAGE_LIMIT) {
+      current = paragraph;
+      continue;
+    }
+
+    // Oversized on its own: spend it here rather than pass the limit on.
+    const pieces = splitOversized(paragraph);
+    parts.push(...pieces.slice(0, -1));
+    current = pieces.at(-1) ?? '';
+  }
+
+  flush();
+  return parts;
+}
+
+/**
+ * Last-resort break-up of one paragraph, trying progressively narrower seams.
+ *
+ * Sentence ends first, then any whitespace. Both keep the break outside a tag,
+ * which is the property that matters: a cut between `<b>` and `</b>` would make
+ * Telegram reject the whole message.
+ */
+function splitOversized(paragraph: string): string[] {
+  const bySentence = accumulate(paragraph.split(/(?<=[.!?…])\s+/), ' ');
+  if (bySentence.every((part) => visibleLength(part) <= TELEGRAM_MESSAGE_LIMIT)) return bySentence;
+
+  const byWord = accumulate(paragraph.split(/\s+/), ' ');
+  if (byWord.every((part) => visibleLength(part) <= TELEGRAM_MESSAGE_LIMIT)) return byWord;
+
+  /*
+   * A single unbroken run longer than the limit — no whitespace to cut on.
+   * Nothing can be done that keeps both the tags balanced and the length legal,
+   * and a rejected send is more honest than silently truncated text.
+   */
+  throw new Error(
+    `Абзац без пробілів довший за ліміт Telegram (${TELEGRAM_MESSAGE_LIMIT}) — розбити безпечно неможливо`,
+  );
+}
+
+/** Greedily packs pieces into parts that stay under the message limit. */
+function accumulate(pieces: string[], glue: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+
+  for (const piece of pieces) {
+    const candidate = current ? `${current}${glue}${piece}` : piece;
     if (visibleLength(candidate) > TELEGRAM_MESSAGE_LIMIT && current) {
       parts.push(current);
-      current = paragraph;
+      current = piece;
     } else {
       current = candidate;
     }

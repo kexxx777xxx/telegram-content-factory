@@ -132,12 +132,6 @@ postsRouter.patch('/posts/:postId', async (req, res) => {
 });
 
 /**
- * Clears the draft and queues a fresh generation.
- *
- * `keepTopic` defaults to true: regenerating usually means "same topic, better
- * text", and releasing the topic every time would churn the bank.
- */
-/**
  * Runs the slot now, ignoring its time.
  *
  * Works from any unfinished state: a ready post is published, an unfinished one
@@ -163,6 +157,12 @@ postsRouter.post('/posts/:postId/publish', async (req, res) => {
   }
 });
 
+/**
+ * Clears the draft and queues a fresh generation.
+ *
+ * `keepTopic` defaults to true: regenerating usually means "same topic, better
+ * text", and releasing the topic every time would churn the bank.
+ */
 postsRouter.post('/posts/:postId/regenerate', async (req, res) => {
   const params = postParam.safeParse(req.params);
   if (!params.success) return badRequest(res, firstIssue(params.error));

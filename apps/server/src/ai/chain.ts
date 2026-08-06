@@ -104,8 +104,6 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
       continue;
     }
 
-    const prompt = await resolvePrompt(options.action, options.projectId, step.model, step.promptId);
-    const rendered = renderPrompt(prompt.body, options.variables);
     const key = await resolveKey(options.projectId, step.provider, options.action);
 
     if (!key) {
@@ -120,150 +118,169 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
       continue;
     }
 
-    if (!deadKeys.has(key.id)) {
+    /*
+     * Checked before the prompt is resolved and rendered: that is two queries
+     * and a render for a step that cannot run. The attempt is still recorded —
+     * the trail exists to answer "why did nothing generate", and a step that
+     * vanishes from it without explanation is the one question it cannot
+     * answer.
+     */
+    if (deadKeys.has(key.id)) {
+      attempts.push({
+        position: step.position,
+        model: step.model,
+        keyLabel: key.label,
+        keyLevel: key.level,
+        outcome: 'skipped',
+        detail: 'Ключ уже відхилив автентифікацію на попередньому кроці цього запуску',
+      });
+      continue;
+    }
 
-      const gate = await acquire(key.id, step.model, {
-        rpmLimit: key.rpmLimit,
-        dailyRequestBudget: key.dailyRequestBudget,
+    const prompt = await resolvePrompt(options.action, options.projectId, step.model, step.promptId);
+    const rendered = renderPrompt(prompt.body, options.variables);
+
+    const gate = await acquire(key.id, step.model, {
+      rpmLimit: key.rpmLimit,
+      dailyRequestBudget: key.dailyRequestBudget,
+    });
+
+    if (!gate.ok) {
+      earliestRetry = earlier(earliestRetry, gate.retryAt);
+      attempts.push({
+        position: step.position,
+        model: step.model,
+        keyLabel: key.label,
+        keyLevel: key.level,
+        outcome: 'skipped',
+        detail: describeDenial(gate.reason),
+        retryAt: gate.retryAt.toISOString(),
+      });
+      continue;
+    }
+
+    const startedAt = Date.now();
+    if (journaling) {
+      await record({
+        projectId: options.projectId,
+        postId: options.postId ?? null,
+        kind: 'model_request',
+        action: options.action,
+        model: step.model,
+        keyLabel: key.label,
+        message: `Запит до ${step.model} (${options.action})`,
+        detail: rendered,
+      });
+    }
+
+    try {
+      const result = await provider.generate(key.secret, {
+        model: step.model,
+        prompt: rendered,
+        temperature: step.params.temperature,
+        maxOutputTokens: step.params.maxOutputTokens,
+        thinkingBudget: step.params.thinkingBudget,
+        responseSchema: options.responseSchema,
+        timeoutMs: options.timeoutMs,
       });
 
-      if (!gate.ok) {
-        earliestRetry = earlier(earliestRetry, gate.retryAt);
-        attempts.push({
-          position: step.position,
-          model: step.model,
-          keyLabel: key.label,
-          keyLevel: key.level,
-          outcome: 'skipped',
-          detail: describeDenial(gate.reason),
-          retryAt: gate.retryAt.toISOString(),
-        });
-        continue;
-      }
+      await recordUsage(key.id, step.model, result.usage);
+      await closeCircuit(key.id, step.model);
 
-      const startedAt = Date.now();
       if (journaling) {
         await record({
           projectId: options.projectId,
           postId: options.postId ?? null,
-          kind: 'model_request',
+          kind: 'model_response',
           action: options.action,
           model: step.model,
           keyLabel: key.label,
-          message: `Запит до ${step.model} (${options.action})`,
-          detail: rendered,
+          message: `Відповідь від ${step.model}`,
+          detail: result.text,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          durationMs: Date.now() - startedAt,
         });
       }
 
-      try {
-        const result = await provider.generate(key.secret, {
+      attempts.push({
+        position: step.position,
+        model: step.model,
+        keyLabel: key.label,
+        keyLevel: key.level,
+        outcome: 'success',
+        durationMs: Date.now() - startedAt,
+      });
+
+      return {
+        text: result.text,
+        model: step.model,
+        apiKeyId: key.id,
+        promptId: prompt.id,
+        promptVersion: prompt.version,
+        usage: result.usage,
+        attempts,
+      };
+    } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      const error = err instanceof LlmError ? err : new LlmError('unknown', String(err));
+      await recordUsage(key.id, step.model, { inputTokens: 0, outputTokens: 0 }, true);
+
+      if (journaling) {
+        await record({
+          projectId: options.projectId,
+          postId: options.postId ?? null,
+          kind: 'model_response',
+          action: options.action,
           model: step.model,
-          prompt: rendered,
-          temperature: step.params.temperature,
-          maxOutputTokens: step.params.maxOutputTokens,
-          thinkingBudget: step.params.thinkingBudget,
-          responseSchema: options.responseSchema,
-          timeoutMs: options.timeoutMs,
+          keyLabel: key.label,
+          message: `${step.model} не впорався: ${error.kind}`,
+          detail: error.message,
+          durationMs,
+          ok: false,
         });
+      }
 
-        await recordUsage(key.id, step.model, result.usage);
-        await closeCircuit(key.id, step.model);
-
-        if (journaling) {
-          await record({
-            projectId: options.projectId,
-            postId: options.postId ?? null,
-            kind: 'model_response',
-            action: options.action,
-            model: step.model,
-            keyLabel: key.label,
-            message: `Відповідь від ${step.model}`,
-            detail: result.text,
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            durationMs: Date.now() - startedAt,
-          });
-        }
-
+      if (error.kind === 'rate_limit') {
+        const blockedUntil = await openCircuit(key.id, step.model, error.retryAfterMs, error.message);
+        earliestRetry = earlier(earliestRetry, blockedUntil);
         attempts.push({
           position: step.position,
           model: step.model,
           keyLabel: key.label,
           keyLevel: key.level,
-          outcome: 'success',
-          durationMs: Date.now() - startedAt,
+          outcome: 'rate_limited',
+          detail: error.message,
+          retryAt: blockedUntil.toISOString(),
+          durationMs,
         });
+        continue;
+      }
 
-        return {
-          text: result.text,
-          model: step.model,
-          apiKeyId: key.id,
-          promptId: prompt.id,
-          promptVersion: prompt.version,
-          usage: result.usage,
-          attempts,
-        };
-      } catch (err) {
-        const durationMs = Date.now() - startedAt;
-        const error = err instanceof LlmError ? err : new LlmError('unknown', String(err));
-        await recordUsage(key.id, step.model, { inputTokens: 0, outputTokens: 0 }, true);
-
-        if (journaling) {
-          await record({
-            projectId: options.projectId,
-            postId: options.postId ?? null,
-            kind: 'model_response',
-            action: options.action,
-            model: step.model,
-            keyLabel: key.label,
-            message: `${step.model} не впорався: ${error.kind}`,
-            detail: error.message,
-            durationMs,
-            ok: false,
-          });
-        }
-
-        if (error.kind === 'rate_limit') {
-          const blockedUntil = await openCircuit(key.id, step.model, error.retryAfterMs, error.message);
-          earliestRetry = earlier(earliestRetry, blockedUntil);
-          attempts.push({
-            position: step.position,
-            model: step.model,
-            keyLabel: key.label,
-            keyLevel: key.level,
-            outcome: 'rate_limited',
-            detail: error.message,
-            retryAt: blockedUntil.toISOString(),
-            durationMs,
-          });
-          continue;
-        }
-
-        if (error.kind === 'auth') {
-          deadKeys.add(key.id);
-          attempts.push({
-            position: step.position,
-            model: step.model,
-            keyLabel: key.label,
-            keyLevel: key.level,
-            outcome: 'auth_failed',
-            detail: error.message,
-            durationMs,
-          });
-          continue;
-        }
-
+      if (error.kind === 'auth') {
+        deadKeys.add(key.id);
         attempts.push({
           position: step.position,
           model: step.model,
           keyLabel: key.label,
           keyLevel: key.level,
-          outcome: error.kind === 'invalid' ? 'invalid' : 'error',
+          outcome: 'auth_failed',
           detail: error.message,
           durationMs,
         });
-
+        continue;
       }
+
+      attempts.push({
+        position: step.position,
+        model: step.model,
+        keyLabel: key.label,
+        keyLevel: key.level,
+        outcome: error.kind === 'invalid' ? 'invalid' : 'error',
+        detail: error.message,
+        durationMs,
+      });
+
     }
   }
 

@@ -1,0 +1,64 @@
+name: CI
+
+# The repo convention is "кожна завершена фаза = один коміт + пуш у main" with a
+# clean typecheck as the gate. That gate only holds if something other than
+# discipline checks it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # The integration suite runs against real Postgres on purpose — the
+        # guarantees under test are SKIP LOCKED, partial unique indexes and
+        # interval arithmetic, which a mock would not exercise.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tcf
+          POSTGRES_PASSWORD: tcf
+          POSTGRES_DB: tcf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tcf -d tcf"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://tcf:tcf@localhost:5432/tcf
+      TEST_DATABASE_URL: postgres://tcf:tcf@localhost:5432/tcf_test
+      # Not secrets: this database is created and thrown away with the runner.
+      APP_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+      ADMIN_AUTH_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Catches the mistake the .gitignore exists to prevent, in the one place
+      # where noticing it late is expensive.
+      - name: app.env must not be committed
+        run: |
+          if git ls-files --error-unmatch app.env 2>/dev/null; then
+            echo "app.env is tracked by git — it holds real secrets"
+            exit 1
+          fi

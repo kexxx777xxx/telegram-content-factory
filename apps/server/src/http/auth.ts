@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 import type { NextFunction, Request, Response } from 'express';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { env } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -21,8 +21,22 @@ interface SessionPayload {
   nonce: string;
 }
 
+/**
+ * The signing key binds the session to the current password.
+ *
+ * Tokens are self-contained — there is no session table to delete from — so
+ * without this a leaked cookie stays valid for its full seven days and changing
+ * the admin password does nothing to it. Mixing the password hash into the key
+ * makes every existing token fail verification the moment the password changes,
+ * which is exactly what "I think I was compromised" needs to do. Rotating
+ * `SESSION_SECRET` still works as the bigger hammer.
+ */
+const SIGNING_KEY = createHash('sha256')
+  .update(`${env.SESSION_SECRET}\0${env.ADMIN_PASSWORD_HASH}`)
+  .digest();
+
 function sign(value: string): string {
-  return createHmac('sha256', env.SESSION_SECRET).update(value).digest('base64url');
+  return createHmac('sha256', SIGNING_KEY).update(value).digest('base64url');
 }
 
 function issueToken(): string {

@@ -20,8 +20,7 @@
     "seed:demo": "npm run seed:demo -w @tcf/server",
     "test": "npm run test -w @tcf/server",
     "test:watch": "npm run test:watch -w @tcf/server",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run typecheck"
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "concurrently": "^10.0.4",

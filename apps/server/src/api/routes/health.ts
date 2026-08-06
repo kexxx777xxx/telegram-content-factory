@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { env } from '../../config.js';
+import { env, version } from '../../config.js';
 import { checkDatabase } from '../../db/client.js';
 
 export const healthRouter: Router = Router();
@@ -13,7 +13,7 @@ healthRouter.get('/health', async (_req, res) => {
   const database = (await checkDatabase()) ? 'up' : 'down';
   res.json({
     status: database === 'up' ? 'ok' : 'degraded',
-    version: process.env.npm_package_version ?? '0.1.0',
+    version,
     database,
     authEnabled: env.ADMIN_AUTH_ENABLED,
     time: new Date().toISOString(),

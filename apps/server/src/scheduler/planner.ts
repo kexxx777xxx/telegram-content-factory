@@ -1,6 +1,6 @@
 import { scheduleSchema } from '@tcf/shared';
 import { and, eq, gte, sql } from 'drizzle-orm';
-import { db } from '../db/client.js';
+import { db, pool } from '../db/client.js';
 import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
@@ -24,43 +24,58 @@ export interface PlannerReport {
 /**
  * One planning pass over every active project.
  *
- * Wrapped in a transaction-scoped advisory lock: a second instance ticking at
- * the same moment simply finds the lock taken and skips, so slots are never
- * double-booked. `posts_slot_uniq` is the belt to that suspenders — even if the
- * lock were lost, the same slot cannot become two posts.
+ * Guarded by a session-level advisory lock: a second instance ticking at the
+ * same moment finds it taken and skips, so slots are never double-booked.
+ * `posts_slot_uniq` is the belt to that suspenders — even if the lock were
+ * lost, the same slot cannot become two posts.
+ *
+ * The lock is held on its own connection rather than by wrapping the tick in a
+ * transaction. An earlier version used `pg_try_advisory_xact_lock`, which reads
+ * as if planning were atomic — but every insert below goes through the shared
+ * `db` handle on *other* pooled connections, so nothing was ever inside that
+ * transaction. All it did was keep one connection idle-in-transaction for the
+ * length of a full pass over every project. A plain session lock says what it
+ * actually does, and Postgres drops it on its own if the process dies.
  */
 export async function planTick(): Promise<PlannerReport> {
-  return db.transaction(async (tx) => {
-    const locked: unknown = await tx.execute(
-      sql`select pg_try_advisory_xact_lock(${PLANNER_LOCK_ID}) as locked`,
+  const client = await pool.connect();
+  try {
+    const held = await client.query<{ locked: boolean }>(
+      'select pg_try_advisory_lock($1) as locked',
+      [PLANNER_LOCK_ID],
     );
-    const gotLock = firstRow<{ locked: boolean }>(locked)?.locked === true;
-    if (!gotLock) {
+    if (held.rows[0]?.locked !== true) {
       logger.debug('planner tick skipped: another instance holds the lock');
       return { projects: 0, postsPlanned: 0, jobsEnqueued: 0, skipped: true };
     }
 
-    const active = await tx.select().from(projects).where(eq(projects.status, 'active'));
+    try {
+      const active = await db.select().from(projects).where(eq(projects.status, 'active'));
 
-    let postsPlanned = 0;
-    let jobsEnqueued = 0;
+      let postsPlanned = 0;
+      let jobsEnqueued = 0;
 
-    for (const project of active) {
-      try {
-        const result = await planProject(project);
-        postsPlanned += result.postsPlanned;
-        jobsEnqueued += result.jobsEnqueued;
-      } catch (err) {
-        // One misconfigured project must not stop planning for the rest.
-        logger.error({ err, project_id: project.id }, 'planning failed for project');
+      for (const project of active) {
+        try {
+          const result = await planProject(project);
+          postsPlanned += result.postsPlanned;
+          jobsEnqueued += result.jobsEnqueued;
+        } catch (err) {
+          // One misconfigured project must not stop planning for the rest.
+          logger.error({ err, project_id: project.id }, 'planning failed for project');
+        }
       }
+
+      jobsEnqueued += await enqueueDailyPrune();
+      jobsEnqueued += await enqueueDailyBackup();
+
+      return { projects: active.length, postsPlanned, jobsEnqueued, skipped: false };
+    } finally {
+      await client.query('select pg_advisory_unlock($1)', [PLANNER_LOCK_ID]);
     }
-
-    jobsEnqueued += await enqueueDailyPrune();
-    jobsEnqueued += await enqueueDailyBackup();
-
-    return { projects: active.length, postsPlanned, jobsEnqueued, skipped: false };
-  });
+  } finally {
+    client.release();
+  }
 }
 
 async function planProject(project: Project): Promise<{ postsPlanned: number; jobsEnqueued: number }> {
@@ -190,13 +205,4 @@ export async function bufferDepth(projectId: string): Promise<number> {
       ),
     );
   return row?.count ?? 0;
-}
-
-function firstRow<T>(result: unknown): T | undefined {
-  if (Array.isArray(result)) return result[0] as T | undefined;
-  if (result && typeof result === 'object' && 'rows' in result) {
-    const rows = (result as { rows?: unknown }).rows;
-    if (Array.isArray(rows)) return rows[0] as T | undefined;
-  }
-  return undefined;
 }

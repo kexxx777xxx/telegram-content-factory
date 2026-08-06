@@ -24,6 +24,8 @@ import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/servi
 import { abandonExpired, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
+import { resetForRegeneration } from '../src/services/posts.js';
+import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 
 /**
  * These run against real Postgres because the guarantees being tested *are*
@@ -322,6 +324,54 @@ describe('activity log', () => {
     const [entry] = await projectLog(project.id);
     expect(entry?.kind).toBe('topic_created');
     expect(entry?.source).toBe('manual');
+  });
+});
+
+describe('resume trail for a partially published post', () => {
+  /*
+   * The ids of already-delivered messages are what stop a retry from reposting
+   * the photo. They therefore have to survive a failed publish — and must not
+   * survive a regeneration, where the post becomes different content.
+   */
+  it('is cleared by regeneration, so a new post sends its own photo', async () => {
+    const project = await makeProject();
+    const [row] = await db
+      .insert(posts)
+      .values({
+        projectId: project.id,
+        scheduledAt: new Date(Date.now() + 3600_000),
+        status: 'ready',
+        textHtml: '<b>старий</b>',
+        tgMessageId: 500,
+        tgExtraMessageIds: [501, 502],
+      })
+      .returning({ id: posts.id });
+
+    const after = await resetForRegeneration(row!.id, true);
+
+    expect(after.tgMessageId).toBeNull();
+    expect(after.tgExtraMessageIds).toBeNull();
+  });
+
+  it('survives a failed publish so the retry can skip what arrived', async () => {
+    const project = await makeProject();
+    const [row] = await db
+      .insert(posts)
+      .values({
+        projectId: project.id,
+        scheduledAt: new Date(Date.now() + 3600_000),
+        status: 'publishing',
+        textHtml: '<b>частково</b>',
+        tgMessageId: 600,
+      })
+      .returning({ id: posts.id });
+
+    // What the scheduler does to a post whose worker died mid-send.
+    await reclaimStuckPublishing(0);
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, row!.id)).limit(1);
+    expect(after?.status).toBe('ready');
+    expect(after?.tgMessageId).toBe(600);
   });
 });
 

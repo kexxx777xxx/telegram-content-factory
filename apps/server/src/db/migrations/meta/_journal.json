@@ -78,6 +78,13 @@
       "when": 1786017914230,
       "tag": "0010_glossy_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786022246767,
+      "tag": "0011_spicy_wolf_cub",
+      "breakpoints": true
     }
   ]
 }

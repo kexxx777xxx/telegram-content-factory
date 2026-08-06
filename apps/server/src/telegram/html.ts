@@ -170,8 +170,20 @@ function safeHref(attrs: string): string {
   return ` href="${escapeAttr(href)}"`;
 }
 
+/**
+ * Escapes text for Telegram, leaving entities that are already correct alone.
+ *
+ * A blanket `&` → `&amp;` would double-escape model output: `Tom &amp; Jerry`
+ * becomes `Tom &amp;amp; Jerry`, and the channel shows the raw `&amp;`. Models
+ * emit entities constantly, so the `&` of a bare `R&D` and the `&` that opens
+ * an existing entity have to be told apart. Only the four entities Telegram
+ * understands survive — anything else is literal text and gets escaped.
+ */
 function escapeText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/&(?!(?:lt|gt|quot|amp);)/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function escapeAttr(value: string): string {
@@ -186,13 +198,21 @@ function collapseBlankLines(text: string): string {
 /**
  * Length as Telegram counts it: entities do not count, the rendered text does.
  * Used to decide between a photo caption (1024) and a separate message (4096).
+ *
+ * Counted in UTF-16 code units — `.length`, not `[...text].length`. Telegram's
+ * limits and its `MessageEntity` offsets are both in UTF-16, so an emoji costs
+ * two. Counting code points instead undercounts by one per emoji, which is how
+ * a caption measured at 1010 arrives as 1040 and the send is rejected at the
+ * slot — hours after generation, with nothing left to fall back on.
  */
 export function visibleLength(html: string): number {
-  const text = html
-    .replace(/<[^>]+>/g, '')
+  return decodeEntities(html.replace(/<[^>]+>/g, '')).length;
+}
+
+function decodeEntities(text: string): string {
+  return text
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, '&');
-  return [...text].length;
 }

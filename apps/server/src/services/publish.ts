@@ -78,6 +78,25 @@ export async function publishReadyPost(
       textHtml: post.textHtml,
       imagePath: project.imageMode === 'none' ? null : post.imagePath,
       botKey: project.id,
+      /*
+       * A post that goes out in several pieces can fail between them. These two
+       * hooks are what keep a retry from reposting what already arrived: the
+       * ids are written as each send is accepted, and read back on the way in.
+       */
+      alreadySent: {
+        messageId: post.tgMessageId,
+        extraMessageIds: post.tgExtraMessageIds ?? [],
+      },
+      onProgress: async (progress) => {
+        await db
+          .update(posts)
+          .set({
+            tgMessageId: progress.messageId,
+            tgExtraMessageIds: progress.extraMessageIds,
+            updatedAt: new Date(),
+          })
+          .where(eq(posts.id, post.id));
+      },
     });
   } catch (err) {
     await db
@@ -111,6 +130,9 @@ export async function publishReadyPost(
         status: 'published',
         publishedAt: new Date(),
         tgMessageId: result.messageId,
+        // The resume trail has served its purpose; `publishedParts` below is
+        // the durable record of how many messages the post became.
+        tgExtraMessageIds: null,
         permalink,
         // Everything reproducible from Telegram goes; only metrics stay.
         textHtml: keepText ? post.textHtml : null,

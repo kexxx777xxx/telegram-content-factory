@@ -112,6 +112,14 @@ function load(): Env {
 
 export const env = load();
 
+/**
+ * Reported by `/api/health`. Read here rather than at the call site so this
+ * stays the only module touching `process.env` — `npm_package_version` is set
+ * by npm when it runs the process and is absent under a bare `node`, hence the
+ * fallback.
+ */
+export const version: string = process.env.npm_package_version ?? '0.1.0';
+
 export const config = {
   env,
   isProduction: env.NODE_ENV === 'production',
