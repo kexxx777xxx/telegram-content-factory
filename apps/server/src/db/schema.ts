@@ -70,6 +70,8 @@ export const projects = pgTable(
     timezone: text('timezone').notNull().default('Europe/Kyiv'),
     language: text('language').notNull().default('uk'),
     persona: text('persona').notNull().default(''),
+    /** Visual language for illustrations; reaches prompts as {{style}}. */
+    imageStyle: text('image_style').notNull().default(''),
     hashtags: text('hashtags').array().notNull().default(sql`'{}'::text[]`),
 
     telegramChannelId: text('telegram_channel_id').notNull(),
@@ -127,6 +129,15 @@ export const apiKeys = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     provider: aiProviderEnum('provider').notNull().default('gemini'),
     label: text('label').notNull(),
+    /**
+     * Stable display number: «Ключ 1», «Ключ 2».
+     *
+     * The id is what everything actually references, but a uuid tells an
+     * operator nothing and a label can be renamed. The number never moves, so
+     * "this project runs on Ключ 2" stays true across renames and across the
+     * default flag moving somewhere else.
+     */
+    slot: integer('slot').notNull().default(1),
     secretEnc: text('secret_enc').notNull(),
     /** Used whenever nothing more specific is chosen. Exactly one may be set. */
     isDefault: boolean('is_default').notNull().default(false),

@@ -125,7 +125,8 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
     <div className="rounded-lg border border-slate-200 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
         <KeyRound className="size-4 text-slate-400" />
-        <span className="font-medium">{apiKey.label}</span>
+        <span className="font-medium">Ключ {apiKey.slot}</span>
+        <span className="text-slate-500">{apiKey.label}</span>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">{apiKey.secretMask}</code>
         {apiKey.isDefault && <Badge tone="green">дефолтний</Badge>}
         {apiKey.batchEnabled && (

@@ -12,7 +12,7 @@ function today(): string {
 }
 
 export async function listApiKeys(): Promise<ApiKeyDto[]> {
-  const rows = await db.select().from(apiKeys).orderBy(desc(apiKeys.isDefault), asc(apiKeys.createdAt));
+  const rows = await db.select().from(apiKeys).orderBy(asc(apiKeys.slot));
 
   const usage = await db
     .select({
@@ -41,6 +41,7 @@ export async function listApiKeys(): Promise<ApiKeyDto[]> {
     provider: key.provider,
     label: key.label,
     secretMask: maskStoredSecret(key.secretEnc) ?? '···',
+    slot: key.slot,
     isDefault: key.isDefault,
     enabled: key.enabled,
     batchEnabled: key.batchEnabled,
@@ -65,9 +66,19 @@ export async function createApiKey(input: ApiKeyInput): Promise<string> {
     // is an unambiguous instruction, not a request to resolve a conflict.
     if (input.isDefault) await clearDefault(tx, input.provider, null);
 
+    // The number is handed out once and never reused: «Ключ 2» must keep
+    // meaning the same key even after «Ключ 1» is deleted, otherwise a project
+    // pinned to a number would silently change hands.
+    const [top] = await tx
+      .select({ slot: apiKeys.slot })
+      .from(apiKeys)
+      .orderBy(desc(apiKeys.slot))
+      .limit(1);
+
     const [row] = await tx
       .insert(apiKeys)
       .values({
+        slot: (top?.slot ?? 0) + 1,
         provider: input.provider,
         label: input.label,
         secretEnc: encryptSecret(input.secret),

@@ -160,6 +160,10 @@ export function ProjectPage() {
           {!isNew && (
             <>
               <ProjectForm value={form} onChange={setForm} mode="edit" section="generation" />
+              {/* Buffers are about how much work is done ahead, not about when
+                  the channel speaks — so they sit with the other project
+                  settings rather than inside the schedule. */}
+              <ProjectForm value={form} onChange={setForm} mode="edit" section="buffers" />
               <ProjectForm value={form} onChange={setForm} mode="edit" section="log" />
             </>
           )}
@@ -179,6 +183,10 @@ export function ProjectPage() {
 
       {!isNew && project && tab === 'models' && (
         <>
+          {/* The channel's voice is prompt material, not an overview: persona,
+              language, hashtags and style are literally substituted into the
+              prompts edited right below. */}
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="voice" />
           <ProjectForm value={form} onChange={setForm} mode="edit" section="models" />
           <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
           <GenerationConfig projectId={project.id} />

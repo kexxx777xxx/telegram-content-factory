@@ -119,6 +119,22 @@ export async function needsReplenish(projectId: string, topicsBufferMin: number)
   return counts.fresh < topicsBufferMin;
 }
 
+/**
+ * The smallest refill worth making a model call for.
+ *
+ * Without a floor the threshold behaves absurdly: a bank of 49 against a
+ * minimum of 50 would spend a whole request to fetch one topic, and do it again
+ * tomorrow. So a refill always tops the bank up **to the minimum**, and never
+ * asks for fewer than this many at once.
+ */
+export const MIN_REFILL_BATCH = 10;
+
+/** How many topics to ask for so the bank ends up back at its minimum. */
+export function refillCount(fresh: number, topicsBufferMin: number): number {
+  const missing = Math.max(topicsBufferMin - fresh, 0);
+  return Math.min(Math.max(missing, MIN_REFILL_BATCH), 50);
+}
+
 export async function listTopics(projectId: string, status?: TopicStatus): Promise<Topic[]> {
   return db
     .select()

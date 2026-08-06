@@ -8,6 +8,7 @@ import { computeSlots, projectJitterSeconds } from '../src/scheduler/slots.js';
 import { buildPermalink } from '../src/telegram/permalink.js';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
+import { MIN_REFILL_BATCH, refillCount } from '../src/services/topics.js';
 
 /** Everything here is pure — no database, no network. */
 
@@ -257,5 +258,18 @@ describe('batch tier', () => {
     // The rule the money depends on: a slot closer than the SLA must never be
     // parked on the cheap tier, or "дешевше" turns into "не вийшло вчасно".
     expect(BATCH_MIN_SLACK_MS).toBeGreaterThan(BATCH_TURNAROUND_MS);
+  });
+});
+
+describe('topic refill', () => {
+  it('tops the bank up to its minimum, not by a token amount', () => {
+    // The complaint this answers: "менше 50 — поповниться на 1 чи до 50?".
+    expect(refillCount(20, 50)).toBe(30);
+  });
+
+  it('never spends a whole model call on a single topic', () => {
+    // 49 of 50 needs one topic; asking for one would burn a request and hit the
+    // same threshold again tomorrow.
+    expect(refillCount(49, 50)).toBe(MIN_REFILL_BATCH);
   });
 });

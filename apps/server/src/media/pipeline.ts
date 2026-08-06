@@ -81,7 +81,7 @@ async function generateWithSvg(
       action: 'svg',
       projectId: project.id,
       postId: post.id,
-      variables: { topic, style: DEFAULT_STYLE },
+      variables: { topic, style: project.imageStyle || DEFAULT_STYLE },
       // A schematic is ~4k output tokens; the default 60s budget is for prose.
       timeoutMs: SVG_TIMEOUT_MS,
     });
@@ -154,7 +154,7 @@ async function generateWithImageModel(
     postId: post.id,
     variables: {
       postText: stripTags(post.textHtml ?? post.topicTitle ?? ''),
-      style: DEFAULT_STYLE,
+      style: project.imageStyle || DEFAULT_STYLE,
     },
   });
 

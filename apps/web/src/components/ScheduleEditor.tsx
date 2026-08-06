@@ -1,6 +1,6 @@
 import type { Schedule } from '@tcf/shared';
 import { Plus, X } from 'lucide-react';
-import { Field, Input, Select } from './ui';
+import { Button, Field, Input, Select } from './ui';
 
 const WEEKDAYS = [
   { value: 1, label: 'Пн' },
@@ -10,6 +10,46 @@ const WEEKDAYS = [
   { value: 5, label: 'Пт' },
   { value: 6, label: 'Сб' },
   { value: 7, label: 'Нд' },
+];
+
+/**
+ * Ready-made schedules, copied into the project rather than linked.
+ *
+ * A shared template that keeps editing every channel that once used it is a
+ * trap: someone tweaks "робочі дні" for one channel and silently moves four
+ * others. Copying makes the preset a starting point and nothing more.
+ */
+const PRESETS: { name: string; hint: string; build: () => Schedule }[] = [
+  {
+    name: 'Двічі на день',
+    hint: '09:00 і 18:00, щодня',
+    build: () => ({ mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] }),
+  },
+  {
+    name: 'Робочі дні',
+    hint: '10:00 і 17:00, Пн–Пт',
+    build: () => ({ mode: 'slots', slots: ['10:00', '17:00'], weekdays: [1, 2, 3, 4, 5] }),
+  },
+  {
+    name: 'Раз на день',
+    hint: '12:00, щодня',
+    build: () => ({ mode: 'slots', slots: ['12:00'], weekdays: [] }),
+  },
+  {
+    name: 'Тричі на день',
+    hint: '09:00, 14:00, 20:00',
+    build: () => ({ mode: 'slots', slots: ['09:00', '14:00', '20:00'], weekdays: [] }),
+  },
+  {
+    name: 'Кожні 4 години',
+    hint: 'від 08:00, безперервно',
+    build: () => ({ mode: 'interval', intervalMinutes: 240, anchor: '08:00' }),
+  },
+  {
+    name: 'Вихідні',
+    hint: '11:00, Сб і Нд',
+    build: () => ({ mode: 'slots', slots: ['11:00'], weekdays: [6, 7] }),
+  },
 ];
 
 /**
@@ -36,6 +76,22 @@ export function ScheduleEditor({
 
   return (
     <div className="space-y-4">
+      <Field label="Шаблони" hint="Підставляє готовий розклад — далі його можна правити як завгодно.">
+        <div className="flex flex-wrap gap-2">
+          {PRESETS.map((preset) => (
+            <Button
+              key={preset.name}
+              variant="secondary"
+              title={preset.hint}
+              onClick={() => onChange(preset.build())}
+            >
+              {preset.name}
+              <span className="text-xs font-normal text-slate-400">{preset.hint}</span>
+            </Button>
+          ))}
+        </div>
+      </Field>
+
       <Field label="Режим розкладу">
         <Select value={value.mode} onChange={(e) => switchMode(e.target.value as Schedule['mode'])}>
           <option value="slots">Фіксовані слоти</option>

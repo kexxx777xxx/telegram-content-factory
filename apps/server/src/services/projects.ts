@@ -27,6 +27,7 @@ export function toDto(row: Project): ProjectDto {
     timezone: row.timezone,
     language: row.language,
     persona: row.persona,
+    imageStyle: row.imageStyle,
     hashtags: row.hashtags,
 
     telegramChannelId: row.telegramChannelId,
@@ -78,6 +79,7 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       timezone: input.timezone,
       language: input.language,
       persona: input.persona,
+      imageStyle: input.imageStyle,
       hashtags: input.hashtags,
       telegramChannelId: input.telegramChannelId,
       telegramBotTokenEnc: input.telegramBotToken ? encryptSecret(input.telegramBotToken) : null,
@@ -109,6 +111,7 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
   if (patch.timezone !== undefined) values.timezone = patch.timezone;
   if (patch.language !== undefined) values.language = patch.language;
   if (patch.persona !== undefined) values.persona = patch.persona;
+  if (patch.imageStyle !== undefined) values.imageStyle = patch.imageStyle;
   if (patch.hashtags !== undefined) values.hashtags = patch.hashtags;
   if (patch.telegramChannelId !== undefined) {
     values.telegramChannelId = patch.telegramChannelId;

@@ -81,6 +81,8 @@ const projectFields = {
   language: z.string().min(2).max(16),
   /** Free-form author voice injected into every text prompt. */
   persona: z.string().max(4000),
+  /** Reaches illustration prompts as {{style}}; empty falls back to the built-in. */
+  imageStyle: z.string().max(600),
   hashtags: z.array(z.string().max(64)).max(20),
 
   telegramChannelId: telegramChannelSchema,
@@ -116,6 +118,7 @@ export const projectInputSchema = z.object({
   timezone: projectFields.timezone.default('Europe/Kyiv'),
   language: projectFields.language.default('uk'),
   persona: projectFields.persona.default(''),
+  imageStyle: projectFields.imageStyle.default(''),
   hashtags: projectFields.hashtags.default([]),
   telegramBotToken: z.string().min(20).optional(),
   adminChatId: projectFields.adminChatId.optional(),
@@ -163,6 +166,7 @@ export const projectDtoSchema = z.object({
   timezone: z.string(),
   language: z.string(),
   persona: z.string(),
+  imageStyle: z.string(),
   hashtags: z.array(z.string()),
 
   telegramChannelId: z.string(),
@@ -268,6 +272,8 @@ export const apiKeyDtoSchema = z.object({
   id: z.string().uuid(),
   provider: z.enum(AI_PROVIDERS),
   label: z.string(),
+  /** Stable number shown everywhere a key is chosen: «Ключ 2». */
+  slot: z.number().int(),
   secretMask: z.string(),
   isDefault: z.boolean(),
   enabled: z.boolean(),

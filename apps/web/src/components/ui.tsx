@@ -229,3 +229,14 @@ export function VarTag({ name }: { name: string }) {
     </code>
   );
 }
+
+/**
+ * How a key is named everywhere it can be chosen: «Ключ 2 · Paid».
+ *
+ * The number is what an operator remembers and what stays true — labels get
+ * renamed and the default flag moves between keys, but «Ключ 2» is the same key
+ * it was yesterday, and a project pinned to it stays pinned.
+ */
+export function keyName(key: { slot: number; label: string; isDefault: boolean }): string {
+  return `Ключ ${key.slot} · ${key.label}${key.isDefault ? ' (зараз дефолтний)' : ''}`;
+}

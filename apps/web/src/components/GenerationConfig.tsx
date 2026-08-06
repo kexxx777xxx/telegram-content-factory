@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { Badge, Button, Card, Field, Input, Notice, Select, Textarea } from './ui';
+import { Badge, Button, Card, Field, Input, keyName, Notice, Select, Textarea } from './ui';
 
 const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
   topics: { title: 'Теми', hint: 'Поповнення банку тем' },
@@ -33,9 +33,9 @@ const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
 };
 
 const KEY_LEVEL_LABELS: Record<KeyLevel, string> = {
-  action: 'закріплений за дією',
+  action: 'закріплений саме за цією дією',
   project: 'ключ проєкту',
-  default: 'дефолтний',
+  default: 'дефолтний ключ із налаштувань',
 };
 
 const VARIABLES: Record<AiAction, string[]> = {
@@ -283,15 +283,15 @@ function ActionRow({
           </div>
 
           <Field
-            label="Ключ для цієї дії"
+            label="Яким ключем платимо"
             hint={
               apiKeyId === null ? (
                 <>
-                  Зараз працює <b>{config.keyLabel ?? 'жоден'}</b> ({KEY_LEVEL_LABELS[config.keyLevel]}).
-                  Ієрархія: дія → проєкт → дефолтний.
+                  Зараз спрацює <b>{config.keyLabel ?? 'жоден'}</b> —{' '}
+                  {KEY_LEVEL_LABELS[config.keyLevel]}.
                 </>
               ) : (
-                'Вибраний ключ використовується завжди; підміни на інший ключ не буде.'
+                'Закріплено за цим номером: він не зміниться, навіть якщо дефолтним у налаштуваннях стане інший ключ.'
               )
             }
           >
@@ -300,14 +300,15 @@ function ActionRow({
               onChange={(e) => setApiKeyId(e.target.value || null)}
             >
               <option value="">
-                {projectId ? 'успадкувати (ключ проєкту → дефолтний)' : 'дефолтний ключ'}
+                {projectId
+                  ? 'Як у проєкті (а якщо там не вибрано — дефолтний)'
+                  : 'Дефолтний (який позначено в налаштуваннях)'}
               </option>
               {keys
                 .filter((k) => k.enabled)
                 .map((k) => (
                   <option key={k.id} value={k.id}>
-                    {k.label}
-                    {k.isDefault ? ' (дефолтний)' : ''}
+                    {keyName(k)}
                   </option>
                 ))}
             </Select>
@@ -352,7 +353,10 @@ function ActionRow({
           {projectId && (
             <div className="rounded-lg bg-slate-50 p-4">
               <div className="mb-3 flex flex-wrap items-end gap-3">
-                <Field label="Пробний запуск" hint="Виконує справжній виклик, нічого не зберігає.">
+                <Field
+                  label="Тестовий запуск"
+                  hint="Справжній виклик моделі. Нічого не зберігається — ні пост, ні журнал; результат видно тільки тут."
+                >
                   <Select value={dryModel} onChange={(e) => setDryModel(e.target.value)}>
                     <option value="">Увесь ланцюжок</option>
                     {models.map((m) => (
@@ -488,39 +492,66 @@ function StepRow({
  * Shows the attempt trail, not just the output. When a chain misbehaves the
  * useful answer is which step answered and why the earlier ones did not.
  */
+/**
+ * The call, shown the way the journal shows one: what went to the model, and
+ * what came back.
+ *
+ * The attempt trail stays above it, because when a chain is misconfigured the
+ * useful answer is *which step answered and why the earlier ones did not* —
+ * invisible from the output alone.
+ */
 function DryRunPanel({ result }: { result: DryRunResult }) {
   return (
     <div className="space-y-3">
-      <div className="space-y-1">
-        {result.attempts.map((attempt, i) => (
-          <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
-            <span className={`font-medium ${outcomeColor(attempt.outcome)}`}>
-              {outcomeLabel(attempt.outcome)}
-            </span>
-            <code className="rounded bg-white px-1.5 py-0.5">{attempt.model}</code>
-            <span className="text-slate-500">
-              {attempt.keyLabel}
-              {attempt.durationMs !== undefined && ` · ${attempt.durationMs} мс`}
-            </span>
-            {attempt.detail && <span className="text-slate-500">— {attempt.detail}</span>}
-          </div>
-        ))}
-      </div>
+      {result.attempts.length > 0 && (
+        <div className="space-y-1">
+          {result.attempts.map((attempt, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className={`font-medium ${outcomeColor(attempt.outcome)}`}>
+                {outcomeLabel(attempt.outcome)}
+              </span>
+              <code className="rounded bg-white px-1.5 py-0.5">{attempt.model}</code>
+              <span className="text-slate-500">
+                {attempt.keyLabel}
+                {attempt.durationMs !== undefined && ` · ${attempt.durationMs} мс`}
+              </span>
+              {attempt.detail && <span className="text-slate-500">— {attempt.detail}</span>}
+            </div>
+          ))}
+        </div>
+      )}
 
-      {result.ok ? (
-        <div className="space-y-2">
-          <div className="text-xs text-slate-500">
-            {result.model} · промпт {result.promptScope} v{result.promptVersion}
-            {result.usage &&
-              ` · ${result.usage.inputTokens}→${result.usage.outputTokens} токенів`}
+      {result.renderedPrompt && (
+        <div className="rounded-lg border border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+            <Badge>запит</Badge>
+            <span>промпт після підстановки змінних</span>
+            {result.promptScope && (
+              <span className="ml-auto">
+                {result.promptScope} v{result.promptVersion}
+              </span>
+            )}
           </div>
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 text-xs">
-            {result.text}
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-700">
+            {result.renderedPrompt}
           </pre>
         </div>
-      ) : (
-        <Notice tone="red">{result.error}</Notice>
       )}
+
+      <div className="rounded-lg border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+          <Badge tone={result.ok ? 'green' : 'red'}>відповідь</Badge>
+          {result.model && <span className="font-mono">{result.model}</span>}
+          {result.usage && (
+            <span>
+              {result.usage.inputTokens}→{result.usage.outputTokens} токенів
+            </span>
+          )}
+        </div>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-700">
+          {result.ok ? result.text : result.error}
+        </pre>
+      </div>
     </div>
   );
 }

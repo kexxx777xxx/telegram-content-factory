@@ -2,7 +2,7 @@ import type { ApiKeyDto, ProjectDto, ProjectInput, ProjectUpdate, Schedule } fro
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
-import { Card, Field, Input, Notice, Select, Textarea, VarTag } from './ui';
+import { Card, Field, Input, keyName, Notice, Select, Textarea, VarTag } from './ui';
 
 export interface ProjectFormValue {
   name: string;
@@ -11,6 +11,7 @@ export interface ProjectFormValue {
   timezone: string;
   language: string;
   persona: string;
+  imageStyle: string;
   hashtags: string;
   telegramChannelId: string;
   telegramBotToken: string;
@@ -35,6 +36,7 @@ export function emptyForm(): ProjectFormValue {
     timezone: 'Europe/Kyiv',
     language: 'uk',
     persona: '',
+    imageStyle: '',
     hashtags: '',
     telegramChannelId: '',
     telegramBotToken: '',
@@ -60,6 +62,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     timezone: project.timezone,
     language: project.language,
     persona: project.persona,
+    imageStyle: project.imageStyle,
     hashtags: project.hashtags.join(', '),
     telegramChannelId: project.telegramChannelId,
     // Never prefilled: the server only ever returns a mask.
@@ -105,6 +108,7 @@ function common(form: ProjectFormValue) {
     timezone: form.timezone,
     language: form.language,
     persona: form.persona,
+    imageStyle: form.imageStyle,
     hashtags: form.hashtags
       .split(/[,\s]+/)
       .map((tag) => tag.trim().replace(/^#/, ''))
@@ -160,9 +164,18 @@ const TIMEZONES = (() => {
   }
 })();
 
+/**
+ * The built-in illustration style, repeated here so the field can show what it
+ * falls back to. Kept in sync by hand — a single sentence not worth an endpoint.
+ */
+const DEFAULT_STYLE =
+  'зошит у клітинку, ескіз олівцем і чорною ручкою, напівпрозорі пастельні маркери-хайлайтери';
+
 export type ProjectFormSection =
   | 'basics'
+  | 'voice'
   | 'schedule'
+  | 'buffers'
   | 'generation'
   | 'models'
   | 'log'
@@ -243,7 +256,7 @@ export function ProjectForm({
       </Card>
       )}
 
-      {shows('basics') && (
+      {shows('voice') && (
       <Card
         title="Голос каналу"
         hint="Ці поля підставляються в промпти під показаними назвами змінних."
@@ -290,6 +303,23 @@ export function ProjectForm({
               />
             </Field>
           </div>
+
+          <Field
+            label="Стиль ілюстрацій"
+            hint={
+              <>
+                Візуальна мова схем і зображень; підставляється як <VarTag name="style" />. Порожнє
+                поле — вбудований стиль: {DEFAULT_STYLE}.
+              </>
+            }
+          >
+            <Textarea
+              rows={2}
+              value={value.imageStyle}
+              placeholder={DEFAULT_STYLE}
+              onChange={(e) => set('imageStyle', e.target.value)}
+            />
+          </Field>
         </div>
       </Card>
       )}
@@ -349,17 +379,16 @@ export function ProjectForm({
       {shows('models') && (
       <Card
         title="Ключ проєкту"
-        hint="Оплачує все, для чого не вибрано окремий ключ у конкретній дії нижче."
+        hint="Оплачує все, для чого не вибрано окремий ключ у конкретній дії нижче. Вибраний номер закріплюється: якщо дефолтним у налаштуваннях стане інший ключ, проєкт лишиться на своєму."
       >
         <Field label="API-ключ">
           <Select value={value.apiKeyId} onChange={(e) => set('apiKeyId', e.target.value)}>
-            <option value="">Дефолтний ключ</option>
+            <option value="">Дефолтний (який позначено в налаштуваннях)</option>
             {keys
               .filter((k) => k.enabled)
               .map((k) => (
                 <option key={k.id} value={k.id}>
-                  {k.label}
-                  {k.isDefault ? ' (дефолтний)' : ''}
+                  {keyName(k)}
                 </option>
               ))}
           </Select>
@@ -394,7 +423,7 @@ export function ProjectForm({
       </Card>
       )}
 
-      {shows('schedule') && (
+      {shows('buffers') && (
       <Card
         title="Буфери"
         hint="Скільки роботи система робить наперед і що робити зі слотом, який не встиг."
@@ -461,7 +490,7 @@ export function ProjectForm({
 
       {shows('log') && (
       <Card
-        title="Журнал проєкту"
+        title="Налаштування журналу"
         hint="Один вимикач на все: тема, поповнення банку, кроки генерації, публікація — і повні промпти з відповідями."
       >
         <div className="space-y-4">

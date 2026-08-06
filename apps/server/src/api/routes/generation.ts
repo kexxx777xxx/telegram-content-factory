@@ -102,6 +102,7 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
       persona: project.persona,
       language: project.language,
       hashtags: project.hashtags.join(' '),
+      imageStyle: project.imageStyle,
     }),
     ...parsed.data.variables,
   };
@@ -166,13 +167,13 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
 /** Plausible placeholders so a dry run exercises the real prompt shape. */
 function defaultVariables(
   action: AiAction,
-  project: { persona: string; language: string; hashtags: string },
+  project: { persona: string; language: string; hashtags: string; imageStyle: string },
 ): Record<string, string> {
   const base = {
     persona: project.persona || 'Досвідчений практик, пише стисло й по суті.',
     language: project.language,
     hashtags: project.hashtags,
-    style: DEFAULT_STYLE,
+    style: project.imageStyle || DEFAULT_STYLE,
   };
 
   switch (action) {

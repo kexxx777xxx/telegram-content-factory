@@ -1,4 +1,4 @@
-import type { LogEntry, PostDto, PostsPage, ProjectDto } from '@tcf/shared';
+import type { LogEntry, PostDto, PostsPage, ProjectDto, TopicsPage } from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
-import { TopicBank } from './TopicBank';
+import { TopicRows } from './TopicRows';
 import { Badge, Button, Card, Input, Notice, Spoiler, Textarea } from './ui';
 
 /**
@@ -72,11 +72,19 @@ const CAPTION_LIMIT = 1024;
 
 export function PostsCard({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<PostsPage | null>(null);
+  const [topics, setTopics] = useState<TopicsPage | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
 
-  const reload = useCallback(async () => setPage(await api.listPosts(project.id)), [project.id]);
+  const reload = useCallback(async () => {
+    const [posts, bank] = await Promise.all([
+      api.listPosts(project.id),
+      api.listTopics(project.id),
+    ]);
+    setPage(posts);
+    setTopics(bank);
+  }, [project.id]);
 
   useEffect(() => {
     void reload();
@@ -100,8 +108,8 @@ export function PostsCard({ project }: { project: ProjectDto }) {
       title="Пости"
       hint={
         project.postsBuffer === 0
-          ? 'Слоти календаря: коли саме вийде пост і в якому він стані. Буфер вимкнено — пост готується в момент слоту.'
-          : `Слоти календаря: коли саме вийде пост і в якому він стані. Планувальник тримає ${project.postsBuffer} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
+          ? 'Усе, що канал скаже: слоти з датою і теми, які ще чекають слоту. Буфер вимкнено — пост готується в момент слоту.'
+          : `Усе, що канал скаже: слоти з датою і теми, які ще чекають слоту. Планувальник тримає ${project.postsBuffer} ${project.postsBuffer === 1 ? 'слот' : 'слоти'} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
       }
     >
       <div className="space-y-4">
@@ -119,7 +127,22 @@ export function PostsCard({ project }: { project: ProjectDto }) {
                 statusFilter === null ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              усі {page.posts.length}
+              усі {page.posts.length + (topics?.counts.fresh ?? 0)}
+            </button>
+          )}
+          {topics && topics.counts.fresh > 0 && (
+            <button
+              type="button"
+              title="Теми без слоту: пост, у якого поки є лише про що. Слот отримають, коли планувальник дійде до них."
+              onClick={() => setStatusFilter(statusFilter === 'topic' ? null : 'topic')}
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                statusFilter === 'topic'
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              без слоту
+              <strong>{topics.counts.fresh}</strong>
             </button>
           )}
           {page &&
@@ -185,12 +208,13 @@ export function PostsCard({ project }: { project: ProjectDto }) {
         )}
 
         {/*
-          The topic bank lives here rather than in a card of its own: both
-          answered "what will this channel say", which is why they read as
-          duplicates. They are not equals though — a slot has a deadline and a
-          topic does not — so the bank sits underneath, collapsed, as supply.
+          Topics are posts that have nothing but a subject yet, so they are rows
+          in the same list rather than a separate bank. The only real difference
+          is that a slot has a date and a topic does not — which the row shows.
         */}
-        <TopicBank project={project} />
+        {statusFilter === null || statusFilter === 'topic' ? (
+          <TopicRows project={project} query={query} onChanged={() => void reload()} />
+        ) : null}
       </div>
     </Card>
   );

@@ -28,6 +28,7 @@ async function main() {
     persona:
       'Досвідчений системний архітектор. Пише колегіально, без води й маркетингу, ' +
       'спирається на реальні компроміси, а не на «best practices» загалом.',
+    imageStyle: '',
     hashtags: ['#архітектура', '#системнийдизайн'],
     telegramChannelId: '@demo_architecture',
     adminChatId: null,
@@ -49,6 +50,7 @@ async function main() {
     timezone: 'Europe/Warsaw',
     language: 'uk',
     persona: 'Продуктовий менеджер. Коротко, з прикладами й без жаргону.',
+    imageStyle: '',
     hashtags: ['#продукт'],
     telegramChannelId: '@demo_product',
     adminChatId: null,

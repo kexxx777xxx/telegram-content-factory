@@ -5,7 +5,7 @@ import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
-import { needsReplenish } from '../services/topics.js';
+import { needsReplenish, refillCount, topicCounts } from '../services/topics.js';
 import { computeSlots, projectJitterSeconds } from './slots.js';
 
 /**
@@ -98,10 +98,14 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
   }
 
   if (await needsReplenish(project.id, project.topicsBufferMin)) {
+    // Top the bank back up to its minimum rather than adding a fixed handful:
+    // "поповнюється, коли менше 50" has to mean "поповнюється до 50", or the
+    // threshold is hit again the next day with one topic more than before.
+    const counts = await topicCounts(project.id);
     const enqueued = await enqueue({
       type: 'replenish_topics',
       projectId: project.id,
-      payload: { count: 20 },
+      payload: { count: refillCount(counts.fresh, project.topicsBufferMin) },
       // One replenish job per project may be in flight; the partial unique
       // index lets the same key be reused once it finishes.
       dedupeKey: `project:${project.id}:replenish`,
