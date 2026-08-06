@@ -16,10 +16,25 @@ import { PostsCard } from '../components/PostsCard';
 import { ProjectJournal } from '../components/ProjectJournal';
 import { Button, Card, Input, Notice, SegmentedControl, Tabs } from '../components/ui';
 
+type Tab = 'basics' | 'posts' | 'schedule' | 'models' | 'telegram';
+
+const TABS: { value: Tab; label: string }[] = [
+  { value: 'basics', label: 'Огляд' },
+  { value: 'posts', label: 'Пости' },
+  { value: 'schedule', label: 'Розклад' },
+  { value: 'models', label: 'Моделі і промпти' },
+  { value: 'telegram', label: 'Telegram' },
+];
+
 export function ProjectPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, tab: tabParam } = useParams<{ id: string; tab: string }>();
   const isNew = id === 'new';
   const navigate = useNavigate();
+
+  // The tab is part of the address, so a reload — or a link sent to someone —
+  // lands on the same screen instead of resetting to the first one.
+  const tab: Tab = TABS.some((t) => t.value === tabParam) ? (tabParam as Tab) : 'basics';
+  const openTab = (next: Tab) => navigate(`/projects/${id ?? ''}/${next}`);
 
   const [project, setProject] = useState<ProjectDto | null>(null);
   const [form, setForm] = useState<ProjectFormValue>(emptyForm);
@@ -28,7 +43,6 @@ export function ProjectPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [statusSaved, setStatusSaved] = useState(false);
-  const [tab, setTab] = useState<Tab>('basics');
 
   /**
    * Applies immediately instead of waiting for "Зберегти".
@@ -65,7 +79,7 @@ export function ProjectPage() {
     try {
       if (isNew) {
         const created = await api.createProject(toCreatePayload(form));
-        navigate(`/projects/${created.id}`, { replace: true });
+        navigate(`/projects/${created.id}/basics`, { replace: true });
       } else if (id) {
         const updated = await api.updateProject(id, toUpdatePayload(form));
         setProject(updated);
@@ -135,19 +149,7 @@ export function ProjectPage() {
         model chains and its content at once, and scrolling past four of them to
         reach the fifth is how an operator loses their place.
       */}
-      {!isNew && (
-        <Tabs
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'basics', label: 'Огляд' },
-            { value: 'posts', label: 'Пости' },
-            { value: 'schedule', label: 'Розклад' },
-            { value: 'models', label: 'Моделі і промпти' },
-            { value: 'telegram', label: 'Telegram' },
-          ]}
-        />
-      )}
+      {!isNew && <Tabs value={tab} onChange={openTab} options={TABS} />}
 
       {(isNew || tab === 'basics') && (
         <>
@@ -204,8 +206,6 @@ export function ProjectPage() {
     </div>
   );
 }
-
-type Tab = 'basics' | 'posts' | 'schedule' | 'models' | 'telegram';
 
 function SaveBar({
   saving,

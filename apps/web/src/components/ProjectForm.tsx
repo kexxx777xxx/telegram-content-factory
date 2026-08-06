@@ -1,4 +1,12 @@
-import type { ApiKeyDto, ProjectDto, ProjectInput, ProjectUpdate, Schedule } from '@tcf/shared';
+import {
+  TELEGRAM_CAPTION_LIMIT,
+  TELEGRAM_MESSAGE_LIMIT,
+  type ApiKeyDto,
+  type ProjectDto,
+  type ProjectInput,
+  type ProjectUpdate,
+  type Schedule,
+} from '@tcf/shared';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
@@ -23,6 +31,7 @@ export interface ProjectFormValue {
   topicsBufferMin: number;
   leadTimeMinutes: number;
   missPolicy: ProjectInput['missPolicy'];
+  postMaxChars: number;
   logEnabled: boolean;
   logRetentionDays: number;
   schedule: Schedule;
@@ -48,6 +57,7 @@ export function emptyForm(): ProjectFormValue {
     topicsBufferMin: 10,
     leadTimeMinutes: 180,
     missPolicy: 'publish_late',
+    postMaxChars: TELEGRAM_CAPTION_LIMIT,
     logEnabled: false,
     logRetentionDays: 7,
     schedule: { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] },
@@ -75,6 +85,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     topicsBufferMin: project.topicsBufferMin,
     leadTimeMinutes: project.leadTimeMinutes,
     missPolicy: project.missPolicy,
+    postMaxChars: project.postMaxChars,
     logEnabled: project.logEnabled,
     logRetentionDays: project.logRetentionDays,
     schedule: project.schedule,
@@ -123,6 +134,7 @@ function common(form: ProjectFormValue) {
     topicsBufferMin: form.topicsBufferMin,
     leadTimeMinutes: form.leadTimeMinutes,
     missPolicy: form.missPolicy,
+    postMaxChars: form.postMaxChars,
     logEnabled: form.logEnabled,
     logRetentionDays: form.logRetentionDays,
     schedule: sortSchedule(form.schedule),
@@ -165,11 +177,16 @@ const TIMEZONES = (() => {
 })();
 
 /**
- * The built-in illustration style, repeated here so the field can show what it
- * falls back to. Kept in sync by hand — a single sentence not worth an endpoint.
+ * Which key actually pays for this project, and what it can do.
+ *
+ * The project either names a key or inherits the default one; batch — the
+ * half-price tier the buffers exist to exploit — works on a paid key only. Left
+ * unsaid, a project with generous buffers on a free key looks configured and
+ * silently generates everything synchronously at full price.
  */
-const DEFAULT_STYLE =
-  'зошит у клітинку, ескіз олівцем і чорною ручкою, напівпрозорі пастельні маркери-хайлайтери';
+function effectiveKey(keys: ApiKeyDto[], apiKeyId: string): ApiKeyDto | null {
+  return keys.find((k) => k.id === apiKeyId) ?? keys.find((k) => k.isDefault) ?? null;
+}
 
 export type ProjectFormSection =
   | 'basics'
@@ -196,10 +213,17 @@ export function ProjectForm({
 }) {
   const [slugTouched, setSlugTouched] = useState(mode === 'edit');
   const [keys, setKeys] = useState<ApiKeyDto[]>([]);
+  const [defaultStyle, setDefaultStyle] = useState<string | null>(null);
 
   useEffect(() => {
     void api.listKeys().then(setKeys);
+    // What an empty style field actually falls back to. Fetched rather than
+    // copied into the bundle: a constant duplicated here is a constant that
+    // will disagree with the server on the day someone changes it.
+    void api.getSettings().then((s) => setDefaultStyle(s.defaultStyle || s.builtinStyle));
   }, []);
+
+  const payingKey = effectiveKey(keys, value.apiKeyId);
   const set = <K extends keyof ProjectFormValue>(key: K, next: ProjectFormValue[K]) =>
     onChange({ ...value, [key]: next });
 
@@ -309,14 +333,14 @@ export function ProjectForm({
             hint={
               <>
                 Візуальна мова схем і зображень; підставляється як <VarTag name="style" />. Порожнє
-                поле — вбудований стиль: {DEFAULT_STYLE}.
+                поле бере стиль із Налаштувань: {defaultStyle ?? '…'}
               </>
             }
           >
             <Textarea
               rows={2}
               value={value.imageStyle}
-              placeholder={DEFAULT_STYLE}
+              placeholder={defaultStyle ?? ''}
               onChange={(e) => set('imageStyle', e.target.value)}
             />
           </Field>
@@ -410,7 +434,7 @@ export function ProjectForm({
             </Select>
           </Field>
 
-          <Field label="Режим публікації">
+          <Field label="Режим публікації" hint="«Після апруву» шле картку в адмін-чат і чекає на підтвердження, а не публікує сам.">
             <Select
               value={value.publishMode}
               onChange={(e) => set('publishMode', e.target.value as never)}
@@ -419,7 +443,40 @@ export function ProjectForm({
               <option value="approval">Після апруву</option>
             </Select>
           </Field>
+
+          <Field
+            label="Довжина поста, символів"
+            hint={
+              <>
+                Скільки символів просити в моделі; підставляється в промпт як{' '}
+                <VarTag name="maxChars" />. До {TELEGRAM_CAPTION_LIMIT} текст іде підписом під фото;
+                довший Telegram підписом не приймає, тож поїде окремим повідомленням одразу за
+                зображенням.
+              </>
+            }
+          >
+            <Input
+              type="number"
+              min={200}
+              max={TELEGRAM_MESSAGE_LIMIT}
+              className="max-w-32"
+              value={value.postMaxChars}
+              onChange={(e) =>
+                set(
+                  'postMaxChars',
+                  Math.min(TELEGRAM_MESSAGE_LIMIT, Math.max(200, Number(e.target.value) || 200)),
+                )
+              }
+            />
+          </Field>
         </div>
+
+        {value.postMaxChars > TELEGRAM_CAPTION_LIMIT && (
+          <Notice>
+            Понад {TELEGRAM_CAPTION_LIMIT} символів — пост виходитиме двома повідомленнями: фото, а
+            під ним текст. Лінк на пост і далі веде на фото.
+          </Notice>
+        )}
       </Card>
       )}
 
@@ -482,6 +539,23 @@ export function ProjectForm({
             <Notice>
               <strong>Банк тем вимкнено.</strong> Тема запитуватиметься в моделі безпосередньо
               перед кожним постом — це ще один виклик у критичному шляху й вищий ризик повторів.
+            </Notice>
+          )}
+
+          {/*
+            The buffer is what makes the half-price tier usable — work with a day
+            of slack can wait for it. On a free key that saving simply does not
+            exist, and nothing on this card said so: the field accepted the
+            number and the project generated everything synchronously.
+          */}
+          {value.postsBuffer > 0 && payingKey && !(payingKey.tier === 'paid' && payingKey.batchEnabled) && (
+            <Notice>
+              <strong>Буфер працює, але без економії.</strong> Ключ «{payingKey.label}»{' '}
+              {payingKey.tier === 'paid'
+                ? 'платний, але batch на ньому не ввімкнено'
+                : 'безкоштовний, а batch доступний лише на платному плані'}
+              , тож теми й тексти генеруються синхронно за повною ціною. Batch (−50%, відповідь до
+              24 год) вмикається в Налаштуваннях → API-ключі.
             </Notice>
           )}
         </div>

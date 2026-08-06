@@ -10,6 +10,7 @@ import { keysRouter } from '../api/routes/keys.js';
 import { postsRouter } from '../api/routes/posts.js';
 import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
+import { settingsRouter } from '../api/routes/settings.js';
 import { ideasRouter } from '../api/routes/ideas.js';
 import { config, env } from '../config.js';
 import { logger } from '../logger.js';
@@ -69,6 +70,7 @@ export function createApp(): Express {
   api.use(ideasRouter);
   api.use(jobsRouter);
   api.use(postsRouter);
+  api.use(settingsRouter);
   app.use('/api', api);
 
   // Built SPA, when present. In dev the Vite server owns this and proxies /api.

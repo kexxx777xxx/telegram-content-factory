@@ -96,6 +96,9 @@ export const projects = pgTable(
     leadTimeMinutes: integer('lead_time_minutes').notNull().default(180),
     missPolicy: missPolicyEnum('miss_policy').notNull().default('publish_late'),
 
+    /** Target post length; reaches the text prompt as {{maxChars}}. */
+    postMaxChars: integer('post_max_chars').notNull().default(1024),
+
     /**
      * One switch for the whole journal. Two ("requests" and "responses") only
      * ever got flipped together — a prompt without its answer explains nothing,
@@ -165,6 +168,22 @@ export const apiKeys = pgTable(
     uniqueIndex('api_keys_default_uniq').on(t.provider).where(sql`${t.isDefault}`),
   ],
 );
+
+/* ── app settings ─────────────────────────────────────────────────────────── */
+
+/**
+ * Installation-wide settings that belong to no project.
+ *
+ * Key–value rather than a one-row table with a column per setting: these are
+ * few, unrelated, and each arrives with its own migration otherwise. Absent key
+ * means «the shipped default applies» — the code never has to distinguish
+ * «never set» from «set to empty», because empty *is* the fallback.
+ */
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt,
+});
 
 /* ── prompts ──────────────────────────────────────────────────────────────── */
 

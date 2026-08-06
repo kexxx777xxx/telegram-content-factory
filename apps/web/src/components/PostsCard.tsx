@@ -1,4 +1,4 @@
-import type { LogEntry, PostDto, PostsPage, ProjectDto } from '@tcf/shared';
+import { TELEGRAM_CAPTION_LIMIT, type LogEntry, type PostDto, type PostsPage, type ProjectDto } from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -74,8 +74,6 @@ const STATUS: Record<
   },
 };
 
-/** Telegram truncates a photo caption here; longer text needs a second message. */
-const CAPTION_LIMIT = 1024;
 
 export function PostsCard({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<PostsPage | null>(null);
@@ -233,7 +231,10 @@ function PostRow({
   /** Nothing has been asked of a model yet — the row is only a subject. */
   const isIdea = post.status === 'idea';
   const length = post.generation.visibleLength ?? 0;
-  const overCaption = length > CAPTION_LIMIT;
+  // Two different thresholds, and both matter: what the project asked the model
+  // for, and where Telegram stops accepting a caption.
+  const overTarget = length > project.postMaxChars;
+  const overCaption = length > TELEGRAM_CAPTION_LIMIT;
 
   async function save() {
     setBusy(true);
@@ -320,9 +321,9 @@ function PostRow({
                 onChange={(e) => setDraft(e.target.value)}
                 className="font-mono text-xs"
               />
-              <p className={`text-xs ${overCaption ? 'text-amber-600' : 'text-slate-500'}`}>
-                {length} символів
-                {overCaption && ` — понад ${CAPTION_LIMIT}, піде окремим повідомленням під фото`}
+              <p className={`text-xs ${overTarget ? 'text-amber-600' : 'text-slate-500'}`}>
+                {length} символів із {project.postMaxChars}
+                {overCaption && ` — понад ${TELEGRAM_CAPTION_LIMIT}, піде окремим повідомленням під фото`}
               </p>
             </>
           )}

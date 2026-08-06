@@ -42,6 +42,7 @@ export function toDto(row: Project): ProjectDto {
     topicsBufferMin: row.topicsBufferMin,
     leadTimeMinutes: row.leadTimeMinutes,
     missPolicy: row.missPolicy,
+    postMaxChars: row.postMaxChars,
     logEnabled: row.logEnabled,
     logRetentionDays: row.logRetentionDays,
     schedule: scheduleSchema.parse(row.schedule),
@@ -91,6 +92,7 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       topicsBufferMin: input.topicsBufferMin,
       leadTimeMinutes: input.leadTimeMinutes,
       missPolicy: input.missPolicy,
+      postMaxChars: input.postMaxChars,
       logEnabled: input.logEnabled,
       logRetentionDays: input.logRetentionDays,
       schedule: input.schedule,
@@ -126,6 +128,7 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
   if (patch.topicsBufferMin !== undefined) values.topicsBufferMin = patch.topicsBufferMin;
   if (patch.leadTimeMinutes !== undefined) values.leadTimeMinutes = patch.leadTimeMinutes;
   if (patch.missPolicy !== undefined) values.missPolicy = patch.missPolicy;
+  if (patch.postMaxChars !== undefined) values.postMaxChars = patch.postMaxChars;
   if (patch.logEnabled !== undefined) values.logEnabled = patch.logEnabled;
   if (patch.logRetentionDays !== undefined) values.logRetentionDays = patch.logRetentionDays;
   if (patch.schedule !== undefined) values.schedule = patch.schedule;

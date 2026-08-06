@@ -7,7 +7,7 @@ import { LoginScreen } from './pages/LoginScreen';
 import { ProjectPage } from './pages/ProjectPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
-import { SettingsPage } from './pages/SettingsPage';
+import { KeyEditorPage, SettingsPage } from './pages/SettingsPage';
 
 export function App() {
   const [session, setSession] = useState<SessionState | null>(null);
@@ -81,11 +81,21 @@ export function App() {
         </header>
 
         <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
+          {/*
+            Every screen has an address, tabs included. A tab kept in component
+            state disappeared on reload and could not be linked to, and the
+            «назад» button then landed wherever the previous *page* was — which
+            is how editing a key ended up throwing the operator into a project.
+          */}
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/:id" element={<ProjectPage />} />
+            <Route path="/projects/:id/:tab" element={<ProjectPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/keys/new" element={<KeyEditorPage />} />
+            <Route path="/settings/keys/:keyId" element={<KeyEditorPage />} />
+            <Route path="/settings/:tab" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>

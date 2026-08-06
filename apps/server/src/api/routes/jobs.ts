@@ -1,9 +1,9 @@
 import { JOB_STATUSES } from '@tcf/shared';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../../db/client.js';
-import { jobs } from '../../db/schema.js';
+import { jobs, projects } from '../../db/schema.js';
 import { logger } from '../../logger.js';
 import { jobCounts, retryJob } from '../../queue/enqueue.js';
 import { planTick } from '../../scheduler/planner.js';
@@ -14,39 +14,62 @@ import { badRequest, firstIssue } from './helpers.js';
 
 export const jobsRouter: Router = Router();
 
+/**
+ * Statuses a job can be deleted in.
+ *
+ * `pending` and `running` are excluded deliberately: deleting a job the planner
+ * is counting on (or a worker is holding) loses the work silently, and the queue
+ * has no way to notice it went missing. Everything terminal is fair game.
+ */
+const PURGEABLE = ['done', 'failed', 'dead'] as const;
+
 jobsRouter.get('/jobs', async (req, res) => {
   const query = z
     .object({
       status: z.enum(JOB_STATUSES).optional(),
       projectId: z.string().uuid().optional(),
-      limit: z.coerce.number().int().min(1).max(200).default(50),
+      limit: z.coerce.number().int().min(1).max(500).default(100),
     })
     .safeParse(req.query);
   if (!query.success) return badRequest(res, firstIssue(query.error));
 
+  const conditions: SQL[] = [];
+  if (query.data.status) conditions.push(eq(jobs.status, query.data.status));
+  // Filtering in SQL, not after the fact: a project filter applied to an already
+  // truncated page showed "нічого" whenever the newest 50 jobs belonged to
+  // another project.
+  if (query.data.projectId) conditions.push(eq(jobs.projectId, query.data.projectId));
+
   const rows = await db
-    .select()
+    .select({
+      id: jobs.id,
+      type: jobs.type,
+      projectId: jobs.projectId,
+      // The id answers nothing when read; the name is why the row is here.
+      projectName: projects.name,
+      status: jobs.status,
+      attempts: jobs.attempts,
+      maxAttempts: jobs.maxAttempts,
+      runAfter: jobs.runAfter,
+      lastError: jobs.lastError,
+      dedupeKey: jobs.dedupeKey,
+      createdAt: jobs.createdAt,
+      updatedAt: jobs.updatedAt,
+    })
     .from(jobs)
-    .where(query.data.status ? eq(jobs.status, query.data.status) : undefined)
+    .leftJoin(projects, eq(jobs.projectId, projects.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(jobs.updatedAt))
     .limit(query.data.limit);
 
   res.json({
     counts: await jobCounts(),
-    jobs: rows
-      .filter((row) => !query.data.projectId || row.projectId === query.data.projectId)
-      .map((row) => ({
-        id: row.id,
-        type: row.type,
-        projectId: row.projectId,
-        status: row.status,
-        attempts: row.attempts,
-        maxAttempts: row.maxAttempts,
-        runAfter: row.runAfter.toISOString(),
-        lastError: row.lastError,
-        dedupeKey: row.dedupeKey,
-        updatedAt: row.updatedAt.toISOString(),
-      })),
+    jobs: rows.map((row) => ({
+      ...row,
+      runAfter: row.runAfter.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    })),
   });
 });
 
@@ -62,6 +85,57 @@ jobsRouter.post('/jobs/:id/retry', async (req, res) => {
   }
   logger.info({ job_id: params.data.id }, 'job requeued manually');
   res.status(204).end();
+});
+
+/** Throws away one finished job. Retry stays the answer while it can still run. */
+jobsRouter.delete('/jobs/:id', async (req, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) return badRequest(res, firstIssue(params.error));
+
+  const [row] = await db
+    .delete(jobs)
+    .where(and(eq(jobs.id, params.data.id), inArray(jobs.status, [...PURGEABLE])))
+    .returning({ id: jobs.id });
+
+  if (!row) {
+    res.status(409).json({
+      error: 'Видалити можна лише завершену джобу (done, failed або dead) — така не знайдена',
+    });
+    return;
+  }
+  logger.info({ job_id: params.data.id }, 'job deleted manually');
+  res.status(204).end();
+});
+
+/**
+ * Empties a whole status at once.
+ *
+ * A queue that accumulated thousands of dead jobs cannot be cleaned one row at
+ * a time, and leaving them there costs more than the rows: the counts stop
+ * meaning anything, so a *new* failure is invisible among the old ones.
+ */
+jobsRouter.post('/jobs/purge', async (req, res) => {
+  const parsed = z
+    .object({
+      status: z.enum(PURGEABLE),
+      projectId: z.string().uuid().nullable().optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return badRequest(res, firstIssue(parsed.error));
+
+  const conditions: SQL[] = [eq(jobs.status, parsed.data.status)];
+  if (parsed.data.projectId) conditions.push(eq(jobs.projectId, parsed.data.projectId));
+
+  const removed = await db
+    .delete(jobs)
+    .where(and(...conditions))
+    .returning({ id: jobs.id });
+
+  logger.info(
+    { status: parsed.data.status, projectId: parsed.data.projectId ?? null, removed: removed.length },
+    'queue purged',
+  );
+  res.json({ removed: removed.length });
 });
 
 jobsRouter.get('/dashboard', async (_req, res) => {

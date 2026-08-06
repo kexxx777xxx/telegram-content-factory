@@ -116,11 +116,12 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 
 ## Схема БД
 
-12 таблиць, `apps/server/src/db/schema.ts`:
+13 таблиць, `apps/server/src/db/schema.ts`:
 
 | Таблиця | Роль |
 | --- | --- |
-| `projects` | канал + голос + розклад + режими |
+| `projects` | канал + голос + розклад + режими + цільова довжина поста |
+| `app_settings` | key–value для налаштувань інсталяції (стиль ілюстрацій за замовчуванням); відсутній рядок = діє вбудоване |
 | `api_keys` | ключі провайдерів, шифровані; рівно один із них дефолтний |
 | `prompts` | версіоновані промпти в трьох скоупах |
 | `model_chains` / `model_chain_steps` | ланцюжки моделей на дію |

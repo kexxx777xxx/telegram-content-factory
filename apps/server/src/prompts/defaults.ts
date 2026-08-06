@@ -4,8 +4,9 @@ import type { AiAction } from '@tcf/shared';
  * Global default prompts — the bottom of the resolution chain
  * (step override → model scope → project scope → global).
  *
- * Variables are substituted before the call: {{topic}}, {{persona}}, {{language}},
- * {{hashtags}}, {{style}}, {{existingTopics}}, {{count}}, {{postText}}, {{error}}.
+ * Variables are substituted before the call; the full list, with where each one
+ * comes from, is `PROMPT_VARIABLES` in @tcf/shared — the same record the admin
+ * UI renders as its reference, so the two cannot drift.
  *
  * Anything these prompts ask for that *must* hold is also enforced in code —
  * a prompt is a request, not a guarantee. The SVG rules below are mirrored by
@@ -45,7 +46,7 @@ export const DEFAULT_PROMPTS: Record<AiAction, string> = {
 - Жодних вигаданих цифр, бенчмарків чи цитат. Якщо потрібне число — уникай його.
 - Дозволена розмітка Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre>, <a href="">.
   Ніяких <br>, <p>, <div> чи markdown.
-- Тримайся в межах 1024 символів: більший текст доведеться відривати від зображення.
+- Тримайся в межах {{maxChars}} символів: більший текст доведеться відривати від зображення.
 
 Поверни лише текст поста, без пояснень і без обгортки.`,
 
@@ -99,6 +100,13 @@ viewBox="0 0 1200 675", жодного тексту всередині, без <
   image: `{{imagePrompt}}`,
 };
 
-/** Style tokens injected as {{style}} when a project has not overridden them. */
-export const DEFAULT_STYLE =
+/**
+ * The style shipped with the system — the bottom of the {{style}} chain
+ * (project → global setting → this).
+ *
+ * Read through `resolveStyle()` in `services/settings.ts`, never directly:
+ * a constant used at the call site is invisible from the admin UI, and «звідки
+ * узявся цей стиль» then has no answer short of reading the source.
+ */
+export const BUILTIN_STYLE =
   'зошит у клітинку, ескіз олівцем і чорною ручкою, напівпрозорі пастельні маркери-хайлайтери';

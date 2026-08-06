@@ -3,8 +3,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { ChainExhaustedError, ChainMissingError, runChain } from '../../ai/chain.js';
 import { logger } from '../../logger.js';
-import { DEFAULT_STYLE } from '../../prompts/defaults.js';
 import { renderPrompt, resolvePrompt } from '../../prompts/resolve.js';
+import { resolveStyle } from '../../services/settings.js';
 import {
   clearActionOverrides,
   getGenerationConfig,
@@ -102,7 +102,8 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
       persona: project.persona,
       language: project.language,
       hashtags: project.hashtags.join(' '),
-      imageStyle: project.imageStyle,
+      style: await resolveStyle(project.imageStyle),
+      maxChars: project.postMaxChars,
     }),
     ...parsed.data.variables,
   };
@@ -167,13 +168,20 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
 /** Plausible placeholders so a dry run exercises the real prompt shape. */
 function defaultVariables(
   action: AiAction,
-  project: { persona: string; language: string; hashtags: string; imageStyle: string },
+  project: {
+    persona: string;
+    language: string;
+    hashtags: string;
+    style: string;
+    maxChars: number;
+  },
 ): Record<string, string> {
   const base = {
     persona: project.persona || 'Досвідчений практик, пише стисло й по суті.',
     language: project.language,
     hashtags: project.hashtags,
-    style: project.imageStyle || DEFAULT_STYLE,
+    style: project.style,
+    maxChars: String(project.maxChars),
   };
 
   switch (action) {

@@ -1,4 +1,5 @@
-import type { ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import { Info } from 'lucide-react';
+import { useId, useState, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import type { InputHTMLAttributes } from 'react';
 
 /** Small shared primitives so forms stay declarative and visually consistent. */
@@ -6,12 +7,90 @@ import type { InputHTMLAttributes } from 'react';
 const inputBase =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 disabled:bg-slate-50 disabled:text-slate-400';
 
-export function Card({ title, hint, children }: { title?: string; hint?: string; children: ReactNode }) {
+/**
+ * An explanation parked behind an ⓘ next to whatever it explains.
+ *
+ * Every hint used to sit under its field as a permanent paragraph. Together
+ * they took more vertical space than the controls did, and — read every day —
+ * they stopped being read at all. Here the text is one hover (or one tap, or
+ * one Tab) away and costs nothing until it is wanted.
+ *
+ * Hover *and* click, because hover does not exist on a touchscreen, and focus,
+ * because a keyboard has to reach it too.
+ */
+export function InfoHint({ children, className = '' }: { children: ReactNode; className?: string }) {
+  // Two reasons to be open, kept apart on purpose. With one flag a click on a
+  // mouse arrived *after* the hover had already opened the panel, so pressing
+  // the icon closed it — the one gesture everybody tries first did nothing.
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const open = hovered || pinned;
+  const id = useId();
+
+  return (
+    <span className={`relative inline-flex align-middle ${className}`}>
+      <button
+        type="button"
+        aria-label="Пояснення"
+        aria-expanded={open}
+        aria-describedby={open ? id : undefined}
+        onClick={(e) => {
+          // Hints live inside <label>, where a click would otherwise land in the
+          // field and steal focus from what the reader just opened.
+          e.preventDefault();
+          e.stopPropagation();
+          setPinned(!pinned);
+        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => {
+          setHovered(false);
+          setPinned(false);
+        }}
+        className="text-slate-400 transition hover:text-slate-700"
+      >
+        <Info className="size-3.5" />
+      </button>
+      {open && (
+        <span
+          id={id}
+          role="tooltip"
+          className="absolute left-1/2 top-full z-20 mt-1.5 w-72 max-w-[80vw] -translate-x-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-normal leading-relaxed text-slate-600 shadow-lg"
+        >
+          {children}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function Card({
+  title,
+  hint,
+  actions,
+  children,
+}: {
+  title?: string;
+  hint?: ReactNode;
+  /** Controls that belong to the card as a whole; they sit on the title line. */
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-6">
-      {title && <h2 className="font-medium">{title}</h2>}
-      {hint && <p className="mt-1 text-sm text-slate-500">{hint}</p>}
-      <div className={title ? 'mt-5' : ''}>{children}</div>
+      {(title || actions) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {title && (
+            <h2 className="flex items-center gap-1.5 font-medium">
+              {title}
+              {hint && <InfoHint>{hint}</InfoHint>}
+            </h2>
+          )}
+          {actions && <span className="ml-auto flex items-center gap-2">{actions}</span>}
+        </div>
+      )}
+      <div className={title || actions ? 'mt-5' : ''}>{children}</div>
     </section>
   );
 }
@@ -29,9 +108,11 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
       <div className="mt-1.5">{children}</div>
-      {hint && !error && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
       {error && <p className="mt-1.5 text-xs text-red-600">{error}</p>}
     </label>
   );

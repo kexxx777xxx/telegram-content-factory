@@ -163,6 +163,7 @@ export async function generatePostText(
     persona: project.persona,
     language: project.language,
     hashtags: project.hashtags.join(' '),
+    maxChars: project.postMaxChars,
   };
 
   /*

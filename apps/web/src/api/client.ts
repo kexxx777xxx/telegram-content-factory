@@ -4,6 +4,8 @@ import type {
   ApiKeyDto,
   ApiKeyInput,
   ApiKeyUpdate,
+  AppSettings,
+  AppSettingsDto,
   ChainStepInput,
   DryRunInput,
   DryRunResult,
@@ -58,14 +60,20 @@ export interface JobDto {
   id: string;
   type: string;
   projectId: string | null;
+  /** null for jobs that belong to no project — prune and backup. */
+  projectName: string | null;
   status: string;
   attempts: number;
   maxAttempts: number;
   runAfter: string;
   lastError: string | null;
   dedupeKey: string | null;
+  createdAt: string;
   updatedAt: string;
 }
+
+/** Statuses the server allows deleting; nothing running can be thrown away. */
+export type PurgeableStatus = 'done' | 'failed' | 'dead';
 
 export interface DashboardData {
   projects: {
@@ -128,6 +136,10 @@ export const api = {
 
   listModels: (refresh = false) => request<ModelInfo[]>(`/models${refresh ? '?refresh=true' : ''}`),
 
+  getSettings: () => request<AppSettingsDto>('/settings'),
+  saveSettings: (patch: Partial<AppSettings>) =>
+    request<AppSettingsDto>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+
   getGenerationConfig: (projectId?: string) =>
     request<ActionConfig[]>(`/config/generation${projectId ? `?projectId=${projectId}` : ''}`),
   saveGenerationConfig: (
@@ -150,8 +162,20 @@ export const api = {
     ),
 
   dashboard: () => request<DashboardData>('/dashboard'),
-  listJobs: () => request<JobsPage>('/jobs'),
+  listJobs: (filter: { status?: string; projectId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (filter.status) params.set('status', filter.status);
+    if (filter.projectId) params.set('projectId', filter.projectId);
+    const query = params.toString();
+    return request<JobsPage>(`/jobs${query ? `?${query}` : ''}`);
+  },
   retryJob: (id: string) => request<void>(`/jobs/${id}/retry`, { method: 'POST' }),
+  deleteJob: (id: string) => request<void>(`/jobs/${id}`, { method: 'DELETE' }),
+  purgeJobs: (status: PurgeableStatus, projectId?: string) =>
+    request<{ removed: number }>('/jobs/purge', {
+      method: 'POST',
+      body: JSON.stringify({ status, projectId: projectId ?? null }),
+    }),
   forcePlan: () =>
     request<{ projects: number; postsPlanned: number; jobsEnqueued: number; skipped: boolean }>(
       '/scheduler/plan',

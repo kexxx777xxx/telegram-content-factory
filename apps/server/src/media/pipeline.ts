@@ -4,11 +4,11 @@ import { resolveChain } from '../ai/chains.js';
 import { providers } from '../ai/gemini.js';
 import { resolveKey } from '../ai/keys.js';
 import { record } from '../services/activityLog.js';
+import { resolveStyle } from '../services/settings.js';
 import { acquire, openCircuit, recordUsage } from '../ai/rateLimiter.js';
 import { LlmError } from '../ai/provider.js';
 import type { Project } from '../db/schema.js';
 import { logger } from '../logger.js';
-import { DEFAULT_STYLE } from '../prompts/defaults.js';
 import { writeStagedImage } from './staging.js';
 import { fallbackSvg } from './svg/fallback.js';
 import { normaliseModelImage, renderSvgToPng, SvgRenderError } from './svg/render.js';
@@ -81,7 +81,7 @@ async function generateWithSvg(
       action: 'svg',
       projectId: project.id,
       postId: post.id,
-      variables: { topic, style: project.imageStyle || DEFAULT_STYLE },
+      variables: { topic, style: await resolveStyle(project.imageStyle) },
       // A schematic is ~4k output tokens; the default 60s budget is for prose.
       timeoutMs: SVG_TIMEOUT_MS,
     });
@@ -154,7 +154,7 @@ async function generateWithImageModel(
     postId: post.id,
     variables: {
       postText: stripTags(post.textHtml ?? post.topicTitle ?? ''),
-      style: project.imageStyle || DEFAULT_STYLE,
+      style: await resolveStyle(project.imageStyle),
     },
   });
 

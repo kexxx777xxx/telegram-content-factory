@@ -19,9 +19,23 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
+import { PROMPT_VARIABLES } from '@tcf/shared';
 import { api } from '../api/client';
-import { Badge, Button, Card, Field, Input, keyName, Notice, Select, Textarea } from './ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Field,
+  InfoHint,
+  Input,
+  keyName,
+  Notice,
+  Select,
+  Spoiler,
+  Textarea,
+  VarTag,
+} from './ui';
 
 const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
   topics: { title: 'Теми', hint: 'Поповнення банку тем' },
@@ -38,14 +52,32 @@ const KEY_LEVEL_LABELS: Record<KeyLevel, string> = {
   default: 'дефолтний ключ із налаштувань',
 };
 
-const VARIABLES: Record<AiAction, string[]> = {
-  topics: ['persona', 'language', 'count', 'existingTopics'],
-  post_text: ['persona', 'language', 'topic', 'hashtags'],
-  svg: ['topic', 'style'],
-  svg_repair: ['error', 'svgSource'],
-  image_prompt: ['postText', 'style'],
-  image: ['imagePrompt'],
-};
+/**
+ * The reference an operator needs while editing a prompt: every placeholder the
+ * action understands, what lands in it, and which setting supplies it.
+ *
+ * It sits under the prompt box rather than in a hint, because it is read *while*
+ * typing — a tooltip that closes on the first keystroke would be useless here.
+ */
+function VariableReference({ action }: { action: AiAction }) {
+  return (
+    <Spoiler label="Довідник змінних">
+      <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-[9rem_1fr]">
+        {PROMPT_VARIABLES[action].map((variable) => (
+          <Fragment key={variable.name}>
+            <dt>
+              <VarTag name={variable.name} />
+            </dt>
+            <dd className="text-slate-600">
+              {variable.meaning}
+              <span className="block text-slate-400">{variable.source}</span>
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+    </Spoiler>
+  );
+}
 
 /**
  * One editor for both scopes. With `projectId` it edits a project override and
@@ -229,11 +261,13 @@ function ActionRow({
       {expanded && (
         <div className="space-y-5 border-t border-slate-200 px-4 py-4">
           <div>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex items-center gap-1.5">
               <span className="text-sm font-medium text-slate-700">Ланцюжок моделей</span>
-              <span className="text-xs text-slate-500">
-                Виконуються по черзі; заблокований крок пропускається миттєво
-              </span>
+              <InfoHint>
+                Моделі пробуються згори вниз. Крок, заблокований після 429 або недоступний,
+                пропускається миттєво — наступний отримує той самий промпт. Число праворуч від
+                моделі — температура.
+              </InfoHint>
             </div>
             <div className="space-y-2">
               {steps.map((step, index) => (
@@ -309,23 +343,34 @@ function ActionRow({
             </Select>
           </Field>
 
-          <Field
-            label="Промпт"
-            hint={
-              <>
-                Змінні: {VARIABLES[config.action].map((v) => `{{${v}}}`).join(', ')}. Поточна версія:{' '}
-                {config.prompt.scope} v{config.prompt.version}.
-              </>
-            }
-          >
-            <Textarea
-              rows={10}
-              value={promptBody}
-              className="font-mono text-xs"
-              onChange={(e) => setPromptBody(e.target.value)}
-            />
-          </Field>
+          <div className="space-y-2">
+            <Field
+              label="Промпт"
+              hint={
+                <>
+                  Зберігається новою версією, стара лишається: опублікований пост посилається на
+                  ту версію, що його породила. Поточна: {config.prompt.scope} v
+                  {config.prompt.version}.
+                </>
+              }
+            >
+              <Textarea
+                rows={10}
+                value={promptBody}
+                className="font-mono text-xs"
+                onChange={(e) => setPromptBody(e.target.value)}
+              />
+            </Field>
+            <VariableReference action={config.action} />
+          </div>
 
+          {/*
+            One row of actions, with the test run on the right where the
+            secondary actions live. It used to sit in a box of its own under a
+            paragraph explaining itself — three lines of prose to introduce one
+            button, on a screen already dense with settings. The explanation is
+            the same, it is just not permanently on screen.
+          */}
           <div className="flex flex-wrap items-center gap-3">
             <Button onClick={() => void save()} disabled={saving || !dirty}>
               {saving && <Loader2 className="size-4 animate-spin" />}
@@ -337,28 +382,36 @@ function ActionRow({
                 Збережено як нову версію
               </span>
             )}
-            {overridden && (
-              <Button variant="secondary" onClick={() => void revert()} disabled={saving}>
-                <RotateCcw className="size-4" />
-                Повернути до глобальних
-              </Button>
-            )}
+            <span className="ml-auto flex items-center gap-2">
+              {overridden && (
+                <Button variant="secondary" onClick={() => void revert()} disabled={saving}>
+                  <RotateCcw className="size-4" />
+                  Повернути до глобальних
+                </Button>
+              )}
+              {projectId && (
+                <>
+                  <Button variant="secondary" onClick={() => void runDry()} disabled={running}>
+                    {running ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Play className="size-4" />
+                    )}
+                    Тестовий запуск
+                  </Button>
+                  <InfoHint>
+                    Справжній виклик за налаштуваннями вище: промпт іде в першу модель, а якщо та
+                    зайнята чи впала — у наступну. Нічого не зберігається й нікуди не публікується,
+                    але виклик платний.
+                  </InfoHint>
+                </>
+              )}
+            </span>
           </div>
 
-          {projectId && (
+          {dry && (
             <div className="rounded-lg bg-slate-50 p-4">
-              <div className="mb-3 flex flex-wrap items-center gap-3">
-                <Button variant="secondary" onClick={() => void runDry()} disabled={running}>
-                  {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                  Тестовий запуск
-                </Button>
-                <p className="text-xs text-slate-500">
-                  Справжній виклик за налаштуваннями вище: промпт іде в першу модель, а якщо та
-                  зайнята чи впала — у наступну. Нічого не зберігається.
-                </p>
-              </div>
-
-              {dry && <DryRunPanel result={dry} />}
+              <DryRunPanel result={dry} />
             </div>
           )}
         </div>

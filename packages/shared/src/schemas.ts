@@ -14,6 +14,7 @@ import {
   SCHEDULE_MODES,
   POST_SOURCES,
   KEY_TIERS,
+  TELEGRAM_CAPTION_LIMIT,
 } from './enums.js';
 
 /** `HH:MM` in the project's own timezone. */
@@ -105,6 +106,16 @@ const projectFields = {
   leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60),
   missPolicy: z.enum(MISS_POLICIES),
 
+  /**
+   * Target post length, in visible characters. Reaches the text prompt as
+   * {{maxChars}} instead of a number written into the prompt by hand, so
+   * "трохи коротші пости" is a setting rather than a prompt edit.
+   *
+   * The ceiling is Telegram's own message limit; anything above the caption
+   * limit simply means the text travels as a separate message under the photo.
+   */
+  postMaxChars: z.number().int().min(200).max(4096),
+
   /** One switch for the journal; off by default (prompts and output are bulky). */
   logEnabled: z.boolean(),
   logRetentionDays: z.number().int().min(1).max(365),
@@ -129,6 +140,7 @@ export const projectInputSchema = z.object({
   topicsBufferMin: projectFields.topicsBufferMin.default(10),
   leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
   missPolicy: projectFields.missPolicy.default('publish_late'),
+  postMaxChars: projectFields.postMaxChars.default(TELEGRAM_CAPTION_LIMIT),
   logEnabled: projectFields.logEnabled.default(false),
   logRetentionDays: projectFields.logRetentionDays.default(7),
   schedule: projectFields.schedule.default(defaultSchedule),
@@ -181,6 +193,7 @@ export const projectDtoSchema = z.object({
   topicsBufferMin: z.number().int(),
   leadTimeMinutes: z.number().int(),
   missPolicy: z.enum(MISS_POLICIES),
+  postMaxChars: z.number().int(),
   logEnabled: z.boolean(),
   logRetentionDays: z.number().int(),
   schedule: scheduleSchema,
@@ -466,6 +479,28 @@ export const postsPageSchema = z.object({
   counts: z.record(z.string(), z.number()),
 });
 export type PostsPage = z.infer<typeof postsPageSchema>;
+
+/* ── global settings ──────────────────────────────────────────────────────── */
+
+/**
+ * Settings that belong to the installation rather than to one channel.
+ *
+ * `defaultStyle` used to be a constant compiled into the server, which made it
+ * unanswerable from the admin UI: a project with an empty «Стиль ілюстрацій»
+ * got *something*, and the only way to find out what was to read the source.
+ * An empty value here still falls back to the shipped default, so clearing the
+ * field restores it.
+ */
+export const appSettingsSchema = z.object({
+  defaultStyle: z.string().max(600),
+});
+export type AppSettings = z.infer<typeof appSettingsSchema>;
+
+export const appSettingsDtoSchema = appSettingsSchema.extend({
+  /** What applies when `defaultStyle` is empty — shown, not guessed. */
+  builtinStyle: z.string(),
+});
+export type AppSettingsDto = z.infer<typeof appSettingsDtoSchema>;
 
 export const loginSchema = z.object({
   password: z.string().min(1),

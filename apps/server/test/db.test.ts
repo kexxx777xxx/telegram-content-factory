@@ -4,6 +4,7 @@ import { closeDatabase, db } from '../src/db/client.js';
 import { assertTestDatabase } from './guard.js';
 import {
   apiKeys,
+  appSettings,
   jobs,
   modelChains,
   batchJobs,
@@ -23,7 +24,14 @@ import { planTick } from '../src/scheduler/planner.js';
 import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
 import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
 import { abandonExpired, BATCH_MIN_SLACK_MS, submitBatch } from '../src/ai/batch.js';
-import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
+import {
+  ensureDefaultPrompts,
+  renderPrompt,
+  resolvePrompt,
+  savePromptVersion,
+} from '../src/prompts/resolve.js';
+import { BUILTIN_STYLE, DEFAULT_PROMPTS } from '../src/prompts/defaults.js';
+import { forgetSettings, resolveStyle, saveSettings } from '../src/services/settings.js';
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
 import { listPosts, resetForRegeneration } from '../src/services/posts.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
@@ -856,5 +864,50 @@ describe('topic bank', () => {
   it('never replenishes when the bank is disabled', async () => {
     const project = await makeProject({ topicsBufferMin: 0 });
     expect(await needsReplenish(project.id, 0)).toBe(false);
+  });
+});
+
+describe('illustration style', () => {
+  beforeEach(async () => {
+    await db.delete(appSettings);
+    forgetSettings();
+  });
+
+  it('falls back from the project to the global setting, and then to the built-in one', async () => {
+    // The built-in style used to be read straight from a constant at the call
+    // site, which made "звідки цей стиль" unanswerable from the admin UI. The
+    // chain now has a middle rung, and this is what proves all three exist.
+    expect(await resolveStyle('')).toBe(BUILTIN_STYLE);
+
+    await saveSettings({ defaultStyle: 'акварель, тепле світло' });
+    expect(await resolveStyle('')).toBe('акварель, тепле світло');
+    expect(await resolveStyle('технічне креслення')).toBe('технічне креслення');
+  });
+
+  it('treats an empty global style as "not set" rather than as an empty style', async () => {
+    await saveSettings({ defaultStyle: 'акварель' });
+    await saveSettings({ defaultStyle: '   ' });
+
+    // Storing a blank row would leave illustrations with no style at all, which
+    // is not what clearing the field means.
+    expect(await db.select().from(appSettings)).toHaveLength(0);
+    expect(await resolveStyle('')).toBe(BUILTIN_STYLE);
+  });
+});
+
+describe('post length', () => {
+  it('reaches the prompt as a variable rather than a number typed into it', async () => {
+    const project = await makeProject({ postMaxChars: 600 });
+    const rendered = renderPrompt('Тримайся в межах {{maxChars}} символів', {
+      maxChars: project.postMaxChars,
+    });
+    expect(rendered).toBe('Тримайся в межах 600 символів');
+  });
+
+  it('ships a default prompt that asks for the configured length', async () => {
+    // A prompt with the limit written out is a prompt an operator has to edit
+    // to change the limit — which is exactly what the setting exists to avoid.
+    expect(DEFAULT_PROMPTS.post_text).toContain('{{maxChars}}');
+    expect(DEFAULT_PROMPTS.post_text).not.toContain('1024');
   });
 });
