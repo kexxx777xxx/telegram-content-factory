@@ -23,6 +23,25 @@ export const BATCH_TURNAROUND_MS = 24 * 3600_000;
 /** Below this much slack, batching cannot pay off before the slot arrives. */
 export const BATCH_MIN_SLACK_MS = BATCH_TURNAROUND_MS + 2 * 3600_000;
 
+/**
+ * Whether this action *could* go to the batch tier for this project.
+ *
+ * The planner needs this before the work starts, not when it runs. Eligibility
+ * is decided from the slack left before the slot — and by the time a generation
+ * job wakes up at its lead time, that slack is a couple of hours, far under the
+ * vendor's day. Asked at planning time instead, the answer is still meaningful,
+ * and the job can be started early enough to use the cheap tier.
+ */
+export async function canBatch(projectId: string, action: AiAction): Promise<boolean> {
+  const chain = await resolveChain(action, projectId);
+  const step = chain?.steps[0];
+  if (!step) return false;
+  if (!providers[step.provider]?.submitBatch) return false;
+
+  const key = await resolveKey(projectId, step.provider, action);
+  return key?.batchEnabled === true;
+}
+
 export interface BatchSubmitInput {
   action: AiAction;
   projectId: string;

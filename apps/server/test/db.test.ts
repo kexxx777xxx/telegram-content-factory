@@ -19,9 +19,11 @@ import { claimJob, completeJob, failJob, rescheduleJob } from '../src/queue/clai
 import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
+import { ensureDefaultChains } from '../src/ai/chains.js';
+import { planTick } from '../src/scheduler/planner.js';
 import { launchPost, launchProject, launchTopic, NotLaunchableError } from '../src/services/publishNow.js';
 import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
-import { abandonExpired, submitBatch } from '../src/ai/batch.js';
+import { abandonExpired, BATCH_MIN_SLACK_MS, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
 import { resetForRegeneration } from '../src/services/posts.js';
@@ -324,6 +326,70 @@ describe('activity log', () => {
     const [entry] = await projectLog(project.id);
     expect(entry?.kind).toBe('topic_created');
     expect(entry?.source).toBe('manual');
+  });
+});
+
+describe('batch reaches the buffer at all', () => {
+  /*
+   * The defect this pins down: eligibility for the batch tier is decided from
+   * the slack left before the slot, but the check ran inside the generation
+   * job — which the planner scheduled for `leadTimeMinutes` (3h) before that
+   * slot. Three hours of slack against a 26-hour threshold is always "no", so
+   * batching for post text never happened once on a buffered project.
+   */
+  async function makeBatchKey(batchEnabled: boolean) {
+    await db.insert(apiKeys).values({
+      provider: 'gemini',
+      label: batchEnabled ? 'paid' : 'free',
+      secretEnc: encryptSecret('secret'),
+      isDefault: true,
+      batchEnabled,
+    });
+  }
+
+  async function firstGenerateJob(projectId: string) {
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.projectId, projectId), eq(jobs.type, 'generate_post')))
+      .orderBy(jobs.runAfter)
+      .limit(1);
+    return job;
+  }
+
+  it('starts far-off posts immediately when the key can batch', async () => {
+    await ensureDefaultPrompts();
+    await makeBatchKey(true);
+    // Seven days of buffer: every slot past the first is well over the
+    // 26-hour threshold the batch tier needs.
+    const project = await makeProject({ postsBuffer: 7, leadTimeMinutes: 180, status: 'active' });
+    await ensureDefaultChains();
+
+    await planTick();
+
+    const job = await firstGenerateJob(project.id);
+    expect(job).toBeDefined();
+    // Immediately — within the 15-minute spread that keeps projects sharing a
+    // slot from firing in the same second — rather than three hours before a
+    // slot that is days away.
+    const waitMinutes = (job!.runAfter.getTime() - Date.now()) / 60_000;
+    expect(waitMinutes).toBeLessThan(16);
+    // And well before the batch window would have closed.
+    expect(job!.runAfter.getTime()).toBeLessThan(Date.now() + BATCH_MIN_SLACK_MS);
+  });
+
+  it('keeps the lead time when the key cannot batch', async () => {
+    await ensureDefaultPrompts();
+    await makeBatchKey(false);
+    const project = await makeProject({ postsBuffer: 7, leadTimeMinutes: 180, status: 'active' });
+    await ensureDefaultChains();
+
+    await planTick();
+
+    const job = await firstGenerateJob(project.id);
+    expect(job).toBeDefined();
+    // Nothing to gain by generating days early without the cheap tier.
+    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
   });
 });
 

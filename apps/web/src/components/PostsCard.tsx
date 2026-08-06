@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
+import { formatDateTime, zoneDiffers } from '../lib/time';
 import { LaunchButton } from './LaunchButton';
 import { TopicRows } from './TopicRows';
 import { Badge, Button, Card, Input, Spoiler, Textarea } from './ui';
@@ -244,12 +245,9 @@ function PostRow({
   }, [post.textHtml]);
 
   const label = STATUS[post.status] ?? { text: post.status, tone: 'neutral' as const, hint: '' };
-  const slot = new Date(post.scheduledAt).toLocaleString('uk-UA', {
-    timeZone: project.timezone,
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
+  const slot = formatDateTime(post.scheduledAt, {
+    timezone: project.timezone,
+    withZone: zoneDiffers(project.timezone),
   });
 
   const length = post.generation.visibleLength ?? 0;
@@ -364,9 +362,7 @@ function PostRow({
               <dt className="text-slate-500">Згенеровано</dt>
               <dd>
                 {post.generation.generatedAt
-                  ? new Date(post.generation.generatedAt).toLocaleString('uk-UA', {
-                      timeZone: project.timezone,
-                    })
+                  ? formatDateTime(post.generation.generatedAt, { timezone: project.timezone })
                   : '—'}
               </dd>
             </dl>
@@ -494,9 +490,7 @@ function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
                 </span>
               )}
               <span className="ml-auto">
-                {new Date(entry.createdAt).toLocaleTimeString('uk-UA', {
-                  timeZone: project.timezone,
-                })}
+                {formatDateTime(entry.createdAt, { timezone: project.timezone, timeOnly: true })}
               </span>
             </div>
             <p className="px-3 py-2 text-xs text-slate-700">{entry.message}</p>

@@ -2,6 +2,7 @@ import { AlertTriangle, Ban, Clock, Loader2, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type DashboardData } from '../api/client';
+import { formatDateTime, formatLocalTime, zoneDiffers } from '../lib/time';
 import { Badge, Button, Card, Notice } from '../components/ui';
 
 /**
@@ -48,7 +49,7 @@ export function DashboardPage() {
           {data.blocked
             .map(
               (b) =>
-                `${b.keyLabel} / ${b.model} до ${new Date(b.blockedUntil).toLocaleTimeString('uk-UA')}`,
+                `${b.keyLabel} / ${b.model} до ${formatLocalTime(b.blockedUntil)}`,
             )
             .join('; ')}
           . Генерація на цих моделях пропускається миттєво, доки вікно не закриється.
@@ -69,7 +70,10 @@ export function DashboardPage() {
         </Notice>
       )}
 
-      <Card title="Проєкти" hint="Глибина буфера — єдине число, що попереджає до того, як слот зірветься.">
+      <Card
+        title="Проєкти"
+        hint="«Буфер» — скільки постів уже готові наперед. Поки це число більше за нуль, найближчий слот вийде навіть якщо моделі зараз недоступні; нуль означає, що пост робитиметься в останню мить."
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -228,13 +232,7 @@ function formatSlot(iso: string | null, timezone: string): React.ReactNode {
   return (
     <span className="flex items-center gap-1.5">
       <Clock className="size-3.5 text-slate-400" />
-      {new Date(iso).toLocaleString('uk-UA', {
-        timeZone: timezone,
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      })}
+      {formatDateTime(iso, { timezone, withZone: zoneDiffers(timezone) })}
     </span>
   );
 }

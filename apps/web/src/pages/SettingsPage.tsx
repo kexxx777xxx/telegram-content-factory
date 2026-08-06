@@ -1,6 +1,7 @@
 import type { ApiKeyDto } from '@tcf/shared';
 import { AlertTriangle, Check, KeyRound, Layers, Loader2, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { formatLocalTime } from '../lib/time';
 import { api } from '../api/client';
 import { GenerationConfig } from '../components/GenerationConfig';
 import { QueueCard } from '../components/QueueCard';
@@ -125,8 +126,7 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
     <div className="rounded-lg border border-slate-200 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
         <KeyRound className="size-4 text-slate-400" />
-        <span className="font-medium">Ключ {apiKey.slot}</span>
-        <span className="text-slate-500">{apiKey.label}</span>
+        <span className="font-medium">{apiKey.label}</span>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">{apiKey.secretMask}</code>
         {apiKey.isDefault && <Badge tone="green">дефолтний</Badge>}
         {apiKey.batchEnabled && (
@@ -184,7 +184,7 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
           <span className="text-amber-700">
             заблоковано після 429:{' '}
             {apiKey.blockedModels
-              .map((b) => `${b.model} до ${new Date(b.blockedUntil).toLocaleTimeString('uk-UA')}`)
+              .map((b) => `${b.model} до ${formatLocalTime(b.blockedUntil)}`)
               .join(', ')}
           </span>
         </div>

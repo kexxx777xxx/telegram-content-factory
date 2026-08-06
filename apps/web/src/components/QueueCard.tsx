@@ -1,5 +1,6 @@
 import { Loader2, PlayCircle, RefreshCw, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { formatLocalTime } from '../lib/time';
 import { api, type JobsPage } from '../api/client';
 import { Badge, Button, Card, Notice } from './ui';
 
@@ -90,7 +91,7 @@ export function QueueCard() {
                 </span>
                 {job.status === 'pending' && (
                   <span className="text-slate-400">
-                    з {new Date(job.runAfter).toLocaleTimeString('uk-UA')}
+                    з {formatLocalTime(job.runAfter)}
                   </span>
                 )}
                 {job.lastError && (

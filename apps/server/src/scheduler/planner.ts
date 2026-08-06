@@ -7,6 +7,7 @@ import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
 import { needsReplenish, refillCount, topicCounts } from '../services/topics.js';
 import { computeSlots, projectJitterSeconds } from './slots.js';
+import { BATCH_MIN_SLACK_MS, canBatch } from '../ai/batch.js';
 
 /**
  * Arbitrary but fixed: two instances must derive the same lock id to exclude
@@ -102,7 +103,7 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
           type: 'generate_post',
           projectId: project.id,
           payload: { postId: created.id },
-          runAfter: generationStart(project, slot),
+          runAfter: await generationStart(project, slot),
           dedupeKey: `post:${created.id}:generate`,
         });
         if (enqueued) jobsEnqueued++;
@@ -137,16 +138,30 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
 /**
  * When generation should start for a slot.
  *
- * `leadTimeMinutes` before the slot, plus a stable per-project offset. Without
- * the offset, every project sharing a 09:00 slot would fire its model calls in
- * the same second; deriving it from the id rather than randomly keeps a
+ * Normally `leadTimeMinutes` before the slot, plus a stable per-project offset.
+ * Without the offset, every project sharing a 09:00 slot would fire its model
+ * calls in the same second; deriving it from the id rather than randomly keeps a
  * replanning tick producing the same value.
+ *
+ * The exception is the batch tier, and it is the whole reason this is async.
+ * Whether a post can be batched is decided from the slack left before its slot,
+ * and that check happens *inside the job*. With a three-hour lead time the job
+ * woke up with three hours of slack against a 26-hour threshold — so the answer
+ * was always no, and batching for post text never once happened on a buffered
+ * project. Starting such a post immediately instead lets it submit the cheap
+ * order days ahead and park until the answer arrives, which is also what makes
+ * an empty buffer fill up straight away rather than one lead time at a time.
  */
-function generationStart(project: Project, slot: Date): Date {
-  const lead = project.leadTimeMinutes * 60_000;
+async function generationStart(project: Project, slot: Date): Promise<Date> {
+  const now = Date.now();
   const jitter = projectJitterSeconds(project.id) * 1000;
-  const start = new Date(slot.getTime() - lead + jitter);
-  return start.getTime() < Date.now() ? new Date() : start;
+
+  if (slot.getTime() - now >= BATCH_MIN_SLACK_MS && (await canBatch(project.id, 'post_text'))) {
+    return new Date(now + jitter);
+  }
+
+  const start = new Date(slot.getTime() - project.leadTimeMinutes * 60_000 + jitter);
+  return start.getTime() < now ? new Date() : start;
 }
 
 /**

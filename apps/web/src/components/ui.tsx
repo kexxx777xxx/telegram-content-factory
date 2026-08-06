@@ -231,12 +231,12 @@ export function VarTag({ name }: { name: string }) {
 }
 
 /**
- * How a key is named everywhere it can be chosen: «Ключ 2 · Paid».
+ * How a key is named everywhere it can be chosen.
  *
- * The number is what an operator remembers and what stays true — labels get
- * renamed and the default flag moves between keys, but «Ключ 2» is the same key
- * it was yesterday, and a project pinned to it stays pinned.
+ * The label is what the operator typed, so it is what they recognise. A
+ * position number in front of it («Ключ 2 · Paid») added a second name for the
+ * same thing and made every dropdown read like a form field.
  */
-export function keyName(key: { slot: number; label: string; isDefault: boolean }): string {
-  return `Ключ ${key.slot} · ${key.label}${key.isDefault ? ' (зараз дефолтний)' : ''}`;
+export function keyName(key: { label: string; isDefault: boolean }): string {
+  return `${key.label}${key.isDefault ? ' (зараз дефолтний)' : ''}`;
 }

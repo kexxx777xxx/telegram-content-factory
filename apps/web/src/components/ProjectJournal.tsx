@@ -1,6 +1,7 @@
 import type { LogEntry, ProjectDto } from '@tcf/shared';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { formatDateTime } from '../lib/time';
 import { api } from '../api/client';
 import { Badge, Button, Card, Notice } from './ui';
 
@@ -87,13 +88,7 @@ export function ProjectJournal({ project }: { project: ProjectDto }) {
                       className="flex flex-wrap items-baseline gap-2 rounded-lg border border-slate-100 px-3 py-1.5 text-xs"
                     >
                       <span className="font-mono text-slate-400">
-                        {new Date(entry.createdAt).toLocaleString('uk-UA', {
-                          timeZone: project.timezone,
-                          day: '2-digit',
-                          month: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                        {formatDateTime(entry.createdAt, { timezone: project.timezone })}
                       </span>
                       <Badge tone={entry.ok ? kind.tone : 'red'}>{kind.text}</Badge>
                       {entry.source && (
