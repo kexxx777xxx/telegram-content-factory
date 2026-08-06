@@ -1,6 +1,8 @@
 # Changelog
 
-Формат — [Keep a Changelog](https://keepachangelog.com/uk/1.1.0/).
+**Дописується в кінець** — найновіше внизу. Записи вище розділу з датами лишились
+від [Keep a Changelog](https://keepachangelog.com/uk/1.1.0/), де порядок
+зворотний; переписувати їх заради єдиного напрямку не варте того.
 
 ## [Unreleased]
 
