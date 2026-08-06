@@ -7,6 +7,7 @@ import { normalizeTopic } from '../src/services/topics.js';
 import { computeSlots, projectJitterSeconds } from '../src/scheduler/slots.js';
 import { buildPermalink } from '../src/telegram/permalink.js';
 import { backoffSeconds } from '../src/queue/claim.js';
+import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 
 /** Everything here is pure — no database, no network. */
 
@@ -248,5 +249,13 @@ describe('retry backoff', () => {
     expect(backoffSeconds(2)).toBe(60);
     expect(backoffSeconds(3)).toBe(120);
     expect(backoffSeconds(20)).toBe(1800);
+  });
+});
+
+describe('batch tier', () => {
+  it('needs more slack than the vendor turnaround, not less', () => {
+    // The rule the money depends on: a slot closer than the SLA must never be
+    // parked on the cheap tier, or "дешевше" turns into "не вийшло вчасно".
+    expect(BATCH_MIN_SLACK_MS).toBeGreaterThan(BATCH_TURNAROUND_MS);
   });
 });

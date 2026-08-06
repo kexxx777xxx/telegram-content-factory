@@ -10,6 +10,8 @@ export interface ResolvedKey {
   /** Which level supplied it — shown in the UI and in the attempt trail. */
   level: KeyLevel;
   secret: string;
+  /** Whether this key may queue work on the batch tier. */
+  batchEnabled: boolean;
   rpmLimit: number | null;
   dailyRequestBudget: number | null;
 }
@@ -92,6 +94,7 @@ function toResolved(row: typeof apiKeys.$inferSelect, level: KeyLevel): Resolved
     label: row.label,
     level,
     secret: decryptSecret(row.secretEnc),
+    batchEnabled: row.batchEnabled,
     rpmLimit: row.rpmLimit,
     dailyRequestBudget: row.dailyRequestBudget,
   };

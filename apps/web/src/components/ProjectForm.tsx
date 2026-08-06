@@ -22,8 +22,7 @@ export interface ProjectFormValue {
   topicsBufferMin: number;
   leadTimeMinutes: number;
   missPolicy: ProjectInput['missPolicy'];
-  logRequests: boolean;
-  logResponses: boolean;
+  logEnabled: boolean;
   logRetentionDays: number;
   schedule: Schedule;
 }
@@ -47,8 +46,7 @@ export function emptyForm(): ProjectFormValue {
     topicsBufferMin: 10,
     leadTimeMinutes: 180,
     missPolicy: 'publish_late',
-    logRequests: false,
-    logResponses: false,
+    logEnabled: false,
     logRetentionDays: 7,
     schedule: { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] },
   };
@@ -74,8 +72,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     topicsBufferMin: project.topicsBufferMin,
     leadTimeMinutes: project.leadTimeMinutes,
     missPolicy: project.missPolicy,
-    logRequests: project.logRequests,
-    logResponses: project.logResponses,
+    logEnabled: project.logEnabled,
     logRetentionDays: project.logRetentionDays,
     schedule: project.schedule,
   };
@@ -122,8 +119,7 @@ function common(form: ProjectFormValue) {
     topicsBufferMin: form.topicsBufferMin,
     leadTimeMinutes: form.leadTimeMinutes,
     missPolicy: form.missPolicy,
-    logRequests: form.logRequests,
-    logResponses: form.logResponses,
+    logEnabled: form.logEnabled,
     logRetentionDays: form.logRetentionDays,
     schedule: sortSchedule(form.schedule),
   };
@@ -164,7 +160,14 @@ const TIMEZONES = (() => {
   }
 })();
 
-export type ProjectFormSection = 'basics' | 'schedule' | 'generation' | 'telegram' | 'all';
+export type ProjectFormSection =
+  | 'basics'
+  | 'schedule'
+  | 'generation'
+  | 'models'
+  | 'log'
+  | 'telegram'
+  | 'all';
 
 export function ProjectForm({
   value,
@@ -343,48 +346,61 @@ export function ProjectForm({
       </Card>
       )}
 
+      {shows('models') && (
+      <Card
+        title="Ключ проєкту"
+        hint="Оплачує все, для чого не вибрано окремий ключ у конкретній дії нижче."
+      >
+        <Field label="API-ключ">
+          <Select value={value.apiKeyId} onChange={(e) => set('apiKeyId', e.target.value)}>
+            <option value="">Дефолтний ключ</option>
+            {keys
+              .filter((k) => k.enabled)
+              .map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label}
+                  {k.isDefault ? ' (дефолтний)' : ''}
+                </option>
+              ))}
+          </Select>
+        </Field>
+      </Card>
+      )}
+
       {shows('generation') && (
-      <Card title="Генерація">
+      <Card title="Публікація">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Ілюстрація">
+            <Select
+              value={value.imageMode}
+              onChange={(e) => set('imageMode', e.target.value as never)}
+            >
+              <option value="svg">SVG-схема</option>
+              <option value="image_model">Image-модель</option>
+              <option value="none">Без зображення</option>
+            </Select>
+          </Field>
+
+          <Field label="Режим публікації">
+            <Select
+              value={value.publishMode}
+              onChange={(e) => set('publishMode', e.target.value as never)}
+            >
+              <option value="auto">Автоматично</option>
+              <option value="approval">Після апруву</option>
+            </Select>
+          </Field>
+        </div>
+      </Card>
+      )}
+
+      {shows('schedule') && (
+      <Card
+        title="Буфери"
+        hint="Скільки роботи система робить наперед і що робити зі слотом, який не встиг."
+      >
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              label="API-ключ проєкту"
-              hint="Оплачує все, для чого не вибрано окремий ключ у конкретній дії."
-            >
-              <Select value={value.apiKeyId} onChange={(e) => set('apiKeyId', e.target.value)}>
-                <option value="">Дефолтний ключ</option>
-                {keys
-                  .filter((k) => k.enabled)
-                  .map((k) => (
-                    <option key={k.id} value={k.id}>
-                      {k.label}
-                      {k.isDefault ? ' (дефолтний)' : ''}
-                    </option>
-                  ))}
-              </Select>
-            </Field>
-
-            <Field label="Ілюстрація">
-              <Select
-                value={value.imageMode}
-                onChange={(e) => set('imageMode', e.target.value as never)}
-              >
-                <option value="svg">SVG-схема</option>
-                <option value="image_model">Image-модель</option>
-                <option value="none">Без зображення</option>
-              </Select>
-            </Field>
-
-            <Field label="Публікація">
-              <Select
-                value={value.publishMode}
-                onChange={(e) => set('publishMode', e.target.value as never)}
-              >
-                <option value="auto">Автоматично</option>
-                <option value="approval">Після апруву</option>
-              </Select>
-            </Field>
-
             <Field label="Буфер постів" hint="Скільки слотів готувати наперед.">
               <Input
                 type="number"
@@ -403,10 +419,7 @@ export function ProjectForm({
               />
             </Field>
 
-            <Field
-              label="Запас часу, хвилин"
-              hint="За скільки до слоту починати генерацію."
-            >
+            <Field label="Запас часу, хвилин" hint="За скільки до слоту починати генерацію.">
               <Input
                 type="number"
                 min={0}
@@ -446,45 +459,27 @@ export function ProjectForm({
       </Card>
       )}
 
-      {shows('generation') && (
+      {shows('log') && (
       <Card
-        title="Лог генерації"
-        hint="Що саме пішло в модель і що вона відповіла — для кожного поста окремо."
+        title="Журнал проєкту"
+        hint="Один вимикач на все: тема, поповнення банку, кроки генерації, публікація — і повні промпти з відповідями."
       >
         <div className="space-y-4">
-          <div className="space-y-2">
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={value.logRequests}
-                onChange={(e) => set('logRequests', e.target.checked)}
-                className="mt-0.5 size-4 rounded border-slate-300"
-              />
-              <span>
-                Логувати <strong>запити</strong>
-                <span className="block text-xs text-slate-500">
-                  Готовий промпт після підстановки змінних — те, що дозволяє зрозуміти, чому модель
-                  відповіла саме так.
-                </span>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={value.logEnabled}
+              onChange={(e) => set('logEnabled', e.target.checked)}
+              className="mt-0.5 size-4 rounded border-slate-300"
+            />
+            <span>
+              Вести журнал
+              <span className="block text-xs text-slate-500">
+                Окремі перемикачі для запитів і відповідей завжди вмикали разом: промпт без
+                відповіді нічого не пояснює, а відповідь без промпта — ще менше.
               </span>
-            </label>
-
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={value.logResponses}
-                onChange={(e) => set('logResponses', e.target.checked)}
-                className="mt-0.5 size-4 rounded border-slate-300"
-              />
-              <span>
-                Логувати <strong>відповіді</strong>
-                <span className="block text-xs text-slate-500">
-                  Сира відповідь моделі до санітайзера. Помилки записуються, якщо ввімкнено
-                  будь-який із двох перемикачів.
-                </span>
-              </span>
-            </label>
-          </div>
+            </span>
+          </label>
 
           <Field
             label="Зберігати днів"
@@ -503,9 +498,8 @@ export function ProjectForm({
           </Field>
 
           <Notice>
-            Зображення в лог <strong>не потрапляють</strong> — лише рядок про те, яка модель
-            малювала й скільки важить результат. Текст промптів і відповідей лежить у базі, доки не
-            мине строк зберігання.
+            Зображення в журнал <strong>не потрапляють</strong> — лише рядок про те, яка модель
+            малювала й скільки важить результат.
           </Notice>
         </div>
       </Card>

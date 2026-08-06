@@ -139,14 +139,30 @@ docker compose exec -T app printenv ADMIN_PASSWORD_HASH
 docker compose exec -T db psql -U tcf -d tcf -c "update posts set status='planned' where status='generating' and updated_at < now() - interval '20 minutes';"
 ```
 
+**Batch-джоби зависли.** Вони самі скасовуються після власного дедлайну, але подивитись стан:
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -c "select action, model, state, deadline, provider_name from batch_jobs order by created_at desc limit 20;"
+```
+
+Джоба черги, що чекає на batch, стоїть у `pending` з `last_error = 'Теми замовлені через batch…'`
+і перевіряється раз на 15 хвилин. Це нормальний стан, а не збій.
+
 **Лог поста розрісся.** Він вмикається на проєкт і зберігає повні промпти й відповіді. Розмір:
 
 ```bash
-docker compose exec -T db psql -U tcf -d tcf -c "select p.name, count(*), pg_size_pretty(sum(length(l.content))::bigint) from post_logs l join projects p on p.id=l.project_id group by 1;"
+docker compose exec -T db psql -U tcf -d tcf -c "select p.name, count(*), pg_size_pretty(sum(length(coalesce(l.detail,'')))::bigint) from logs l join projects p on p.id=l.project_id group by 1;"
 ```
 
 Прибирається щоденним `prune` за `log_retention_days` проєкту; вимикається перемикачами на
 вкладці «Генерація».
+
+**Джоби виконуються із затримкою в кілька секунд без причини.** Перевірити розбіжність
+годинників хоста й контейнера з базою — черга живе за годинником бази:
+
+```bash
+docker compose exec -T db psql -U tcf -d tcf -tc "select now();" && date -u
+```
 
 **Застрягла джоба в `running`.** Воркер помер, не знявши лок. Перевірити `locked_at`; джоби,
 старші за таймаут, підбирає reaper (фаза 4).

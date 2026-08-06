@@ -7,6 +7,9 @@ import {
   type LlmImageResult,
   type LlmModelInfo,
   type LlmProvider,
+  type LlmBatchHandle,
+  type LlmBatchResult,
+  type LlmBatchState,
 } from './provider.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -135,6 +138,123 @@ export class GeminiProvider implements LlmProvider {
     }
 
     return models.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Queues one generation on the batch tier — half price, up to 24 hours.
+   *
+   * Nothing here waits: the job name goes back to the caller, the queue polls
+   * it later. Blocking a worker for hours would defeat the point of having a
+   * queue at all.
+   */
+  async submitBatch(apiKey: string, request: LlmGenerateRequest): Promise<LlmBatchHandle> {
+    const ai = new GoogleGenAI({ apiKey });
+
+    const config: Record<string, unknown> = {};
+    if (request.temperature !== undefined) config.temperature = request.temperature;
+    if (request.maxOutputTokens !== undefined) config.maxOutputTokens = request.maxOutputTokens;
+    if (request.thinkingBudget !== undefined) {
+      config.thinkingConfig = { thinkingBudget: request.thinkingBudget };
+    }
+    if (request.responseSchema) {
+      config.responseMimeType = 'application/json';
+      config.responseSchema = request.responseSchema;
+    }
+
+    try {
+      const job = await ai.batches.create({
+        model: request.model,
+        src: [
+          {
+            contents: [{ parts: [{ text: request.prompt }], role: 'user' }],
+            ...(Object.keys(config).length > 0 ? { config } : {}),
+          },
+        ],
+        config: { displayName: `tcf-${request.model}-${Date.now()}` },
+      });
+
+      const name = job.name ?? '';
+      if (!name) throw new LlmError('server', 'Batch-джоба створена без імені');
+      return { name, state: mapBatchState(job.state) };
+    } catch (err) {
+      throw classify(err, request.model);
+    }
+  }
+
+  async pollBatch(apiKey: string, name: string): Promise<LlmBatchResult> {
+    const ai = new GoogleGenAI({ apiKey });
+
+    try {
+      const job = await ai.batches.get({ name });
+      const state = mapBatchState(job.state);
+      if (state !== 'succeeded') {
+        return { name, state, error: job.error?.message };
+      }
+
+      const responses = job.dest?.inlinedResponses ?? [];
+      const first = responses[0];
+      if (!first) return { name, state: 'failed', error: 'Batch завершився без відповідей' };
+      if (first.error) return { name, state: 'failed', error: String(first.error.message ?? first.error) };
+
+      const response = first.response;
+      const parts = response?.candidates?.[0]?.content?.parts ?? [];
+      const inline = parts.find((part) => part.inlineData?.data);
+
+      /*
+       * Text is assembled from the parts rather than read off `response.text`.
+       * That accessor is a getter on the SDK's response class, and what comes
+       * back inside a batch is a plain object — the getter is simply absent, so
+       * reading it yields undefined and the job looks like it answered nothing.
+       */
+      const text = parts
+        .map((part) => part.text ?? '')
+        .join('')
+        .trim();
+
+      return {
+        name,
+        state: 'succeeded',
+        text: text || undefined,
+        image: inline?.inlineData?.data
+          ? {
+              data: Buffer.from(inline.inlineData.data, 'base64'),
+              mimeType: inline.inlineData.mimeType ?? 'image/png',
+            }
+          : undefined,
+        usage: {
+          inputTokens: response?.usageMetadata?.promptTokenCount ?? 0,
+          outputTokens: response?.usageMetadata?.candidatesTokenCount ?? 0,
+        },
+      };
+    } catch (err) {
+      throw classify(err, name);
+    }
+  }
+
+  async cancelBatch(apiKey: string, name: string): Promise<void> {
+    const ai = new GoogleGenAI({ apiKey });
+    try {
+      await ai.batches.cancel({ name });
+    } catch {
+      // Cancellation is best-effort: the job may already be done, and either
+      // way we stop reading it. Failing here would turn cleanup into an error.
+    }
+  }
+}
+
+/** Vendor states collapse to the four outcomes the queue can act on. */
+function mapBatchState(state: string | undefined): LlmBatchState {
+  switch (state) {
+    case 'JOB_STATE_SUCCEEDED':
+      return 'succeeded';
+    case 'JOB_STATE_FAILED':
+      return 'failed';
+    case 'JOB_STATE_CANCELLED':
+      return 'cancelled';
+    case 'JOB_STATE_EXPIRED':
+      return 'expired';
+    default:
+      return 'pending';
   }
 }
 

@@ -13,7 +13,7 @@ import {
   type ProjectFormValue,
 } from '../components/ProjectForm';
 import { PostsCard } from '../components/PostsCard';
-import { TopicsCard } from '../components/TopicsCard';
+import { ProjectJournal } from '../components/ProjectJournal';
 import { Button, Card, Input, Notice, SegmentedControl, Tabs } from '../components/ui';
 
 export function ProjectPage() {
@@ -141,9 +141,9 @@ export function ProjectPage() {
           onChange={setTab}
           options={[
             { value: 'basics', label: 'Огляд' },
-            { value: 'content', label: 'Контент' },
+            { value: 'posts', label: 'Пости' },
             { value: 'schedule', label: 'Розклад' },
-            { value: 'generation', label: 'Генерація' },
+            { value: 'models', label: 'Моделі і промпти' },
             { value: 'telegram', label: 'Telegram' },
           ]}
         />
@@ -157,11 +157,18 @@ export function ProjectPage() {
             mode={isNew ? 'create' : 'edit'}
             section={isNew ? 'all' : 'basics'}
           />
+          {!isNew && (
+            <>
+              <ProjectForm value={form} onChange={setForm} mode="edit" section="generation" />
+              <ProjectForm value={form} onChange={setForm} mode="edit" section="log" />
+            </>
+          )}
           <SaveBar saving={saving} saved={saved} isNew={isNew} onSave={() => void save()} />
+          {!isNew && project && <ProjectJournal project={project} />}
         </>
       )}
 
-      {!isNew && project && tab === 'content' && <ContentTab project={project} />}
+      {!isNew && project && tab === 'posts' && <PostsCard project={project} />}
 
       {!isNew && tab === 'schedule' && (
         <>
@@ -170,9 +177,9 @@ export function ProjectPage() {
         </>
       )}
 
-      {!isNew && project && tab === 'generation' && (
+      {!isNew && project && tab === 'models' && (
         <>
-          <ProjectForm value={form} onChange={setForm} mode="edit" section="generation" />
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="models" />
           <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
           <GenerationConfig projectId={project.id} />
         </>
@@ -190,24 +197,7 @@ export function ProjectPage() {
   );
 }
 
-type Tab = 'basics' | 'content' | 'schedule' | 'generation' | 'telegram';
-
-/**
- * Posts and topics on one screen.
- *
- * They looked like duplicates because both are "the list of things this channel
- * will say". They are not the same thing: a slot is *when* something goes out,
- * a topic is *what about* — and only the slots have a deadline. So the slots
- * come first and the bank sits under them as their supply.
- */
-function ContentTab({ project }: { project: ProjectDto }) {
-  return (
-    <div className="space-y-6">
-      <PostsCard project={project} />
-      <TopicsCard project={project} />
-    </div>
-  );
-}
+type Tab = 'basics' | 'posts' | 'schedule' | 'models' | 'telegram';
 
 function SaveBar({
   saving,

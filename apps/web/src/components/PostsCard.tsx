@@ -1,4 +1,4 @@
-import type { PostDto, PostLogEntry, PostsPage, ProjectDto } from '@tcf/shared';
+import type { LogEntry, PostDto, PostsPage, ProjectDto } from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -9,9 +9,10 @@ import {
   Save,
   Send,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
-import { Badge, Button, Card, Notice, Spoiler, Textarea } from './ui';
+import { TopicBank } from './TopicBank';
+import { Badge, Button, Card, Input, Notice, Spoiler, Textarea } from './ui';
 
 /**
  * Status vocabulary in one place.
@@ -72,6 +73,8 @@ const CAPTION_LIMIT = 1024;
 export function PostsCard({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<PostsPage | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
 
   const reload = useCallback(async () => setPage(await api.listPosts(project.id)), [project.id]);
 
@@ -82,6 +85,15 @@ export function PostsCard({ project }: { project: ProjectDto }) {
     const timer = setInterval(() => void reload(), 8_000);
     return () => clearInterval(timer);
   }, [reload]);
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return (page?.posts ?? []).filter((post) => {
+      if (statusFilter && post.status !== statusFilter) return false;
+      if (!needle) return true;
+      return (post.topicTitle ?? '').toLowerCase().includes(needle);
+    });
+  }, [page, statusFilter, query]);
 
   return (
     <Card
@@ -94,18 +106,38 @@ export function PostsCard({ project }: { project: ProjectDto }) {
     >
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-3">
+          {/*
+            The counts double as the filter. They were already the thing an
+            operator scanned first; making them clickable removes a second
+            control that would have said the same words.
+          */}
+          {page && Object.keys(page.counts).length > 0 && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter(null)}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                statusFilter === null ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              усі {page.posts.length}
+            </button>
+          )}
           {page &&
             Object.entries(page.counts).map(([status, count]) => (
-              <span
+              <button
                 key={status}
+                type="button"
                 title={STATUS[status]?.hint}
-                className="flex cursor-help items-center gap-1.5 text-sm"
+                onClick={() => setStatusFilter(statusFilter === status ? null : status)}
+                className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                  statusFilter === status
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
               >
-                <Badge tone={STATUS[status]?.tone ?? 'neutral'}>
-                  {STATUS[status]?.text ?? status}
-                </Badge>
+                {STATUS[status]?.text ?? status}
                 <strong>{count}</strong>
-              </span>
+              </button>
             ))}
           <span className="ml-auto flex items-center gap-2">
             <LaunchButton
@@ -121,6 +153,12 @@ export function PostsCard({ project }: { project: ProjectDto }) {
           </span>
         </div>
 
+        <Input
+          value={query}
+          placeholder="Пошук за темою…"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+
         {!page ? (
           <div className="flex justify-center py-6 text-slate-400">
             <Loader2 className="size-5 animate-spin" />
@@ -129,9 +167,11 @@ export function PostsCard({ project }: { project: ProjectDto }) {
           <p className="text-sm text-slate-500">
             Постів ще немає. Активуйте проєкт — планувальник створить слоти на найближчі дні.
           </p>
+        ) : visible.length === 0 ? (
+          <p className="text-sm text-slate-500">Під фільтр не потрапив жоден пост.</p>
         ) : (
           <div className="space-y-2">
-            {page.posts.map((post) => (
+            {visible.map((post) => (
               <PostRow
                 key={post.id}
                 post={post}
@@ -143,6 +183,14 @@ export function PostsCard({ project }: { project: ProjectDto }) {
             ))}
           </div>
         )}
+
+        {/*
+          The topic bank lives here rather than in a card of its own: both
+          answered "what will this channel say", which is why they read as
+          duplicates. They are not equals though — a slot has a deadline and a
+          topic does not — so the bank sits underneath, collapsed, as supply.
+        */}
+        <TopicBank project={project} />
       </div>
     </Card>
   );
@@ -356,9 +404,13 @@ function describeImage(kind: string | null): string {
   }
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  request: 'запит',
-  response: 'відповідь',
+export const KIND_LABEL: Record<string, string> = {
+  topic_created: 'тема',
+  topics_replenished: 'банк тем',
+  model_request: 'запит',
+  model_response: 'відповідь',
+  generation_step: 'крок',
+  publish: 'публікація',
   note: 'примітка',
 };
 
@@ -367,16 +419,16 @@ const PHASE_LABEL: Record<string, string> = {
  * of the time nobody looks at it.
  */
 function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
-  const [entries, setEntries] = useState<PostLogEntry[] | null>(null);
+  const [entries, setEntries] = useState<LogEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const off = !project.logRequests && !project.logResponses;
+  const off = !project.logEnabled;
 
   async function load() {
     if (entries || loading) return;
     setLoading(true);
     try {
-      setEntries(await api.postLogs(post.id));
+      setEntries(await api.postLog(post.id));
     } finally {
       setLoading(false);
     }
@@ -390,8 +442,7 @@ function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
       }}
     >
       <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900">
-        <span className="inline-block transition group-open:rotate-90">▸</span> Лог запитів до
-        моделей
+        <span className="inline-block transition group-open:rotate-90">▸</span> Журнал поста
         {off && <span className="ml-2 font-normal text-slate-400">(вимкнено в проєкті)</span>}
       </summary>
       <div className="space-y-2 border-t border-slate-200 px-3 py-3">
@@ -399,18 +450,19 @@ function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
         {entries && entries.length === 0 && (
           <p className="text-xs text-slate-500">
             {off
-              ? 'Лог для цього проєкту вимкнено. Увімкніть його на вкладці «Огляд» — наступна генерація запише сюди промпти й відповіді.'
-              : 'Записів немає: пост ще не генерувався після вмикання логу.'}
+              ? 'Журнал для цього проєкту вимкнено. Увімкніть його на вкладці «Огляд» — наступна генерація запише сюди все, що відбувалось.'
+              : 'Записів немає: пост ще не генерувався після вмикання журналу.'}
           </p>
         )}
         {entries?.map((entry) => (
           <div key={entry.id} className="rounded-lg border border-slate-200 bg-white">
             <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
-              <Badge tone={entry.ok ? (entry.phase === 'request' ? 'neutral' : 'green') : 'red'}>
-                {PHASE_LABEL[entry.phase] ?? entry.phase}
+              <Badge tone={entry.ok ? (entry.kind === 'model_request' ? 'neutral' : 'green') : 'red'}>
+                {KIND_LABEL[entry.kind] ?? entry.kind}
               </Badge>
-              <span>{entry.action}</span>
-              <span className="font-mono">{entry.model}</span>
+              {entry.source && <span>{entry.source === 'manual' ? 'вручну' : 'авто'}</span>}
+              {entry.action && <span>{entry.action}</span>}
+              {entry.model && <span className="font-mono">{entry.model}</span>}
               {entry.keyLabel && <span>ключ: {entry.keyLabel}</span>}
               {entry.durationMs !== null && <span>{entry.durationMs} мс</span>}
               {entry.inputTokens !== null && (
@@ -424,9 +476,12 @@ function PostLog({ post, project }: { post: PostDto; project: ProjectDto }) {
                 })}
               </span>
             </div>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-700">
-              {entry.content}
-            </pre>
+            <p className="px-3 py-2 text-xs text-slate-700">{entry.message}</p>
+            {entry.detail && (
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-t border-slate-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-600">
+                {entry.detail}
+              </pre>
+            )}
           </div>
         ))}
       </div>

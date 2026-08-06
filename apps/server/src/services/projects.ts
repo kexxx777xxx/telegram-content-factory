@@ -8,7 +8,7 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { projects, type Project } from '../db/schema.js';
 import { decryptSecret, encryptSecret, maskStoredSecret } from '../crypto/secrets.js';
-import { forgetSwitches } from './postLog.js';
+import { forgetLogSetting } from './activityLog.js';
 
 /** Thrown for conditions the API turns into 4xx rather than 500. */
 export class ProjectConflictError extends Error {}
@@ -41,8 +41,7 @@ export function toDto(row: Project): ProjectDto {
     topicsBufferMin: row.topicsBufferMin,
     leadTimeMinutes: row.leadTimeMinutes,
     missPolicy: row.missPolicy,
-    logRequests: row.logRequests,
-    logResponses: row.logResponses,
+    logEnabled: row.logEnabled,
     logRetentionDays: row.logRetentionDays,
     schedule: scheduleSchema.parse(row.schedule),
 
@@ -90,8 +89,7 @@ export async function createProject(input: ProjectInput): Promise<ProjectDto> {
       topicsBufferMin: input.topicsBufferMin,
       leadTimeMinutes: input.leadTimeMinutes,
       missPolicy: input.missPolicy,
-      logRequests: input.logRequests,
-      logResponses: input.logResponses,
+      logEnabled: input.logEnabled,
       logRetentionDays: input.logRetentionDays,
       schedule: input.schedule,
     })
@@ -125,8 +123,7 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
   if (patch.topicsBufferMin !== undefined) values.topicsBufferMin = patch.topicsBufferMin;
   if (patch.leadTimeMinutes !== undefined) values.leadTimeMinutes = patch.leadTimeMinutes;
   if (patch.missPolicy !== undefined) values.missPolicy = patch.missPolicy;
-  if (patch.logRequests !== undefined) values.logRequests = patch.logRequests;
-  if (patch.logResponses !== undefined) values.logResponses = patch.logResponses;
+  if (patch.logEnabled !== undefined) values.logEnabled = patch.logEnabled;
   if (patch.logRetentionDays !== undefined) values.logRetentionDays = patch.logRetentionDays;
   if (patch.schedule !== undefined) values.schedule = patch.schedule;
 
@@ -138,7 +135,7 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
   if (!row) throw new ProjectNotFoundError('Проєкт не знайдено');
   // The chain runner caches the switches for half a minute; a save is the one
   // moment the operator expects them to apply immediately.
-  forgetSwitches(id);
+  forgetLogSetting(id);
   return toDto(row);
 }
 

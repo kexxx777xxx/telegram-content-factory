@@ -6,7 +6,8 @@ import {
   apiKeys,
   jobs,
   modelChains,
-  postLogs,
+  batchJobs,
+  logs,
   posts,
   projects,
   prompts,
@@ -19,7 +20,8 @@ import { enqueue, reclaimStuckJobs } from '../src/queue/enqueue.js';
 import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
 import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
-import { listPostLogs, logSwitches, pruneLogs } from '../src/services/postLog.js';
+import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
+import { abandonExpired, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
 import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
 
@@ -32,7 +34,7 @@ import { insertTopics, needsReplenish, topicCounts } from '../src/services/topic
 async function reset(): Promise<void> {
   assertTestDatabase();
   await db.execute(
-    sql`truncate ${jobs}, ${posts}, ${postLogs}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
+    sql`truncate ${jobs}, ${posts}, ${logs}, ${batchJobs}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
   );
 }
 
@@ -56,6 +58,14 @@ afterAll(async () => {
 });
 
 describe('queue claiming', () => {
+  it('makes a job claimable immediately, whatever the app clock says', async () => {
+    // The database compares `run_after <= now()` against *its* clock. A job
+    // stamped from the app's clock is invisible until the skew elapses, which
+    // on a container that lags the host silently delays every job.
+    await enqueue({ type: 'prune', dedupeKey: 'clock:1' });
+    expect(await claimJob('w')).not.toBeNull();
+  });
+
   it('hands one job to exactly one worker under contention', async () => {
     for (let i = 0; i < 3; i++) await enqueue({ type: 'prune', dedupeKey: `c:${i}` });
 
@@ -222,45 +232,96 @@ describe('rate limiting', () => {
   });
 });
 
-describe('post log', () => {
-  it('respects the project switches', async () => {
-    const off = await makeProject();
-    const on = await makeProject({ logRequests: true, logResponses: false });
+describe('batch tier', () => {
+  it('does not submit on a key without the batch flag', async () => {
+    const project = await makeProject();
+    await db.insert(apiKeys).values({
+      provider: 'gemini',
+      label: 'free',
+      secretEnc: encryptSecret('secret'),
+      isDefault: true,
+    });
 
-    expect(await logSwitches(off.id)).toEqual({ requests: false, responses: false });
-    expect(await logSwitches(on.id)).toEqual({ requests: true, responses: false });
+    const submitted = await submitBatch({
+      action: 'topics',
+      projectId: project.id,
+      variables: {},
+      deadline: new Date(Date.now() + 3600_000),
+    });
+
+    // Falling back to the normal call is the only safe behaviour: batch is a
+    // paid-tier feature and submitting would fail at the vendor.
+    expect(submitted).toBeNull();
+    expect(await db.select().from(batchJobs)).toHaveLength(0);
+  });
+
+  it('abandons a job past its deadline so the slot can be generated normally', async () => {
+    const project = await makeProject();
+    const [key] = await db
+      .insert(apiKeys)
+      .values({
+        provider: 'gemini',
+        label: 'paid',
+        secretEnc: encryptSecret('secret'),
+        isDefault: true,
+        batchEnabled: true,
+      })
+      .returning({ id: apiKeys.id });
+
+    await db.insert(batchJobs).values({
+      projectId: project.id,
+      apiKeyId: key!.id,
+      action: 'topics',
+      model: 'gemini-test',
+      providerName: 'batches/expired',
+      state: 'pending',
+      deadline: new Date(Date.now() - 60_000),
+    });
+
+    expect(await abandonExpired()).toBe(1);
+    expect(await db.select().from(batchJobs)).toHaveLength(0);
+  });
+});
+
+describe('activity log', () => {
+  it('writes nothing while the project switch is off', async () => {
+    const off = await makeProject();
+    expect(await logEnabled(off.id)).toBe(false);
+
+    await record({ projectId: off.id, kind: 'note', message: 'не має зберегтись' });
+    expect(await db.select().from(logs)).toHaveLength(0);
   });
 
   it('drops entries past the project retention, keeping fresher ones', async () => {
-    const project = await makeProject({ logRetentionDays: 1 });
+    const project = await makeProject({ logRetentionDays: 1, logEnabled: true });
     const [post] = await db
       .insert(posts)
       .values({ projectId: project.id, scheduledAt: new Date(), status: 'planned' })
       .returning({ id: posts.id });
 
-    await db.insert(postLogs).values([
+    await db.insert(logs).values([
       {
         postId: post!.id,
         projectId: project.id,
-        action: 'post_text',
-        model: 'm',
-        phase: 'request',
-        content: 'старий',
+        kind: 'model_request',
+        message: 'старий',
         createdAt: new Date(Date.now() - 3 * 24 * 3600_000),
       },
-      {
-        postId: post!.id,
-        projectId: project.id,
-        action: 'post_text',
-        model: 'm',
-        phase: 'response',
-        content: 'свіжий',
-      },
+      { postId: post!.id, projectId: project.id, kind: 'model_response', message: 'свіжий' },
     ]);
 
     expect(await pruneLogs()).toBe(1);
-    const left = await listPostLogs(post!.id);
-    expect(left.map((e) => e.content)).toEqual(['свіжий']);
+    const left = await postLog(post!.id);
+    expect(left.map((e) => e.message)).toEqual(['свіжий']);
+  });
+
+  it('records where a topic came from', async () => {
+    const project = await makeProject({ logEnabled: true });
+    await insertTopics(project.id, [{ title: 'Ідемпотентність у чергах' }], 'manual');
+
+    const [entry] = await projectLog(project.id);
+    expect(entry?.kind).toBe('topic_created');
+    expect(entry?.source).toBe('manual');
   });
 });
 

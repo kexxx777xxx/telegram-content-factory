@@ -4,6 +4,8 @@ import { runChain } from '../ai/chain.js';
 import { db } from '../db/client.js';
 import { topics, type Topic } from '../db/schema.js';
 import { logger } from '../logger.js';
+import { collectBatch, dropBatch, findProjectBatch, submitBatch } from '../ai/batch.js';
+import { record } from './activityLog.js';
 
 export class TopicNotFoundError extends Error {}
 
@@ -170,7 +172,17 @@ export async function insertTopics(
     .insert(topics)
     .values(values)
     .onConflictDoNothing({ target: [topics.projectId, topics.normalizedHash] })
-    .returning({ title: topics.title });
+    .returning({ id: topics.id, title: topics.title });
+
+  for (const row of inserted) {
+    await record({
+      projectId,
+      topicId: row.id,
+      kind: 'topic_created',
+      source: source === 'ai' ? 'auto' : 'manual',
+      message: `Тема ${source === 'ai' ? 'згенерована' : 'додана вручну'}: ${row.title}`,
+    });
+  }
 
   return {
     inserted: inserted.length,
@@ -223,7 +235,8 @@ export async function replenishTopics(
   count: number,
   persona: string,
   language: string,
-): Promise<ReplenishReport> {
+  options: { allowBatch?: boolean } = {},
+): Promise<ReplenishReport | 'batched'> {
   const existing = await db
     .select({ title: topics.title })
     .from(topics)
@@ -231,18 +244,31 @@ export async function replenishTopics(
     .orderBy(desc(topics.createdAt))
     .limit(120);
 
-  const result = await runChain({
-    action: 'topics',
-    projectId,
-    responseSchema: TOPICS_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
-    variables: {
-      count,
-      persona,
-      language,
-      existingTopics:
-        existing.length > 0 ? existing.map((t) => `- ${t.title}`).join('\n') : '(банк порожній)',
-    },
-  });
+  const variables = {
+    count,
+    persona,
+    language,
+    existingTopics:
+      existing.length > 0 ? existing.map((t) => `- ${t.title}`).join('\n') : '(банк порожній)',
+  };
+
+  /*
+   * Topics are the one thing with no deadline at all — they are needed
+   * "sometime", not by a slot — so they are the natural first customer of the
+   * half-price tier. The threshold that triggers a refill is deliberately a
+   * *minimum*, which means the bank still has topics while the batch cooks.
+   */
+  const batched = await batchedTopics(projectId, variables, options.allowBatch === true);
+  if (batched === 'waiting') return 'batched';
+
+  const result =
+    batched ??
+    (await runChain({
+      action: 'topics',
+      projectId,
+      responseSchema: TOPICS_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
+      variables,
+    }));
 
   const parsed = parseTopics(result.text);
   const report = await insertTopics(projectId, parsed, 'ai');
@@ -259,7 +285,48 @@ export async function replenishTopics(
     'topics replenished',
   );
 
+  await record({
+    projectId,
+    kind: 'topics_replenished',
+    action: 'topics',
+    model: result.model,
+    source: 'auto',
+    message: `Банк тем поповнено: запитано ${count}, отримано ${parsed.length}, додано ${report.inserted}, дублікатів ${report.duplicates}`,
+  });
+
   return { ...report, requested: count, generated: parsed.length, model: result.model };
+}
+
+/** Batch topics: submit when allowed, read when ready, otherwise say nothing. */
+async function batchedTopics(
+  projectId: string,
+  variables: Record<string, string | number | undefined>,
+  allowBatch: boolean,
+): Promise<{ text: string; model: string } | 'waiting' | null> {
+  const pending = await findProjectBatch(projectId, 'topics');
+  if (pending) {
+    const outcome = await collectBatch(pending.id);
+    if (outcome?.state === 'pending') return 'waiting';
+
+    await dropBatch(pending.id);
+    return outcome?.state === 'succeeded' && outcome.text
+      ? { text: outcome.text, model: pending.model }
+      : null;
+  }
+
+  if (!allowBatch) return null;
+
+  const submitted = await submitBatch({
+    action: 'topics',
+    projectId,
+    variables,
+    responseSchema: TOPICS_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
+    // A bank refill that has not arrived in two days is not worth waiting for;
+    // by then the threshold has almost certainly triggered again.
+    deadline: new Date(Date.now() + 2 * 24 * 3600_000),
+  });
+
+  return submitted ? 'waiting' : null;
 }
 
 /**
@@ -307,6 +374,8 @@ export async function takeNextTopic(project: {
   if (claimed) return claimed;
 
   logger.info({ projectId: project.id }, 'topic bank empty, generating on demand');
+  // No batching here by design: this call happens because a post needs a topic
+  // *now*, which is the one situation a 24-hour tier cannot serve.
   await replenishTopics(project.id, project.topicsBufferMin === 0 ? 1 : 5, project.persona, project.language);
   return claimOne(project.id);
 }

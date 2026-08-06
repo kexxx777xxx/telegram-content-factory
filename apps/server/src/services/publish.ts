@@ -1,5 +1,7 @@
 import { and, eq } from 'drizzle-orm';
+import type { LogSource } from '@tcf/shared';
 import { config } from '../config.js';
+import { record } from './activityLog.js';
 import { db } from '../db/client.js';
 import { events, posts, projects, topics } from '../db/schema.js';
 import { logger } from '../logger.js';
@@ -32,7 +34,10 @@ const PUBLISHABLE = new Set(['ready', 'awaiting_approval', 'publishing']);
  * (ADR 0002). Doing it in the same step as publishing is what keeps the two
  * from drifting apart.
  */
-export async function publishReadyPost(postId: string): Promise<'published' | 'skipped'> {
+export async function publishReadyPost(
+  postId: string,
+  source: LogSource = 'auto',
+): Promise<'published' | 'skipped'> {
   const post = await getPost(postId);
   const log = logger.child({ post_id: post.id, project_id: post.projectId });
 
@@ -135,6 +140,15 @@ export async function publishReadyPost(postId: string): Promise<'published' | 's
   // Only after the row is committed: a file deleted before the transaction
   // succeeds would leave a post that can never be republished.
   await removeStagedImage(post.imagePath);
+
+  await record({
+    projectId: post.projectId,
+    postId: post.id,
+    topicId: post.topicId,
+    kind: 'publish',
+    source,
+    message: `Опубліковано ${source === 'manual' ? 'вручну' : 'за розкладом'}: ${permalink}`,
+  });
 
   log.info({ permalink, messageId: result.messageId }, 'post published, local copy erased');
   return 'published';

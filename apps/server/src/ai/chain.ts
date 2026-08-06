@@ -6,7 +6,7 @@ import { providers } from './gemini.js';
 import { resolveKey } from './keys.js';
 import { acquire, closeCircuit, openCircuit, recordUsage } from './rateLimiter.js';
 import { LlmError, type LlmUsage } from './provider.js';
-import { logSwitches, writeLog } from '../services/postLog.js';
+import { logEnabled, record } from '../services/activityLog.js';
 
 /** One row of the diagnostic trail: why each model/key pair was used or skipped. */
 export interface ChainAttempt {
@@ -85,9 +85,7 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
     : chain.steps;
 
   const attempts: ChainAttempt[] = [];
-  const switches = options.postId
-    ? await logSwitches(options.projectId)
-    : { requests: false, responses: false };
+  const journaling = await logEnabled(options.projectId);
   let earliestRetry: Date | undefined;
   /** A key that failed auth is dead for the whole run, not just this step. */
   const deadKeys = new Set<string>();
@@ -144,15 +142,16 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
       }
 
       const startedAt = Date.now();
-      if (switches.requests) {
-        await writeLog({
-          postId: options.postId ?? null,
+      if (journaling) {
+        await record({
           projectId: options.projectId,
+          postId: options.postId ?? null,
+          kind: 'model_request',
           action: options.action,
           model: step.model,
           keyLabel: key.label,
-          phase: 'request',
-          content: rendered,
+          message: `Запит до ${step.model} (${options.action})`,
+          detail: rendered,
         });
       }
 
@@ -170,15 +169,16 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
         await recordUsage(key.id, step.model, result.usage);
         await closeCircuit(key.id, step.model);
 
-        if (switches.responses) {
-          await writeLog({
-            postId: options.postId ?? null,
+        if (journaling) {
+          await record({
             projectId: options.projectId,
+            postId: options.postId ?? null,
+            kind: 'model_response',
             action: options.action,
             model: step.model,
             keyLabel: key.label,
-            phase: 'response',
-            content: result.text,
+            message: `Відповідь від ${step.model}`,
+            detail: result.text,
             inputTokens: result.usage.inputTokens,
             outputTokens: result.usage.outputTokens,
             durationMs: Date.now() - startedAt,
@@ -208,18 +208,16 @@ export async function runChain(options: RunChainOptions): Promise<ChainRunResult
         const error = err instanceof LlmError ? err : new LlmError('unknown', String(err));
         await recordUsage(key.id, step.model, { inputTokens: 0, outputTokens: 0 }, true);
 
-        // Failures are logged whenever either switch is on: a step that fell
-        // over is the case the log exists for, and hiding it behind the
-        // "responses" switch alone would lose it exactly when it matters.
-        if (switches.requests || switches.responses) {
-          await writeLog({
-            postId: options.postId ?? null,
+        if (journaling) {
+          await record({
             projectId: options.projectId,
+            postId: options.postId ?? null,
+            kind: 'model_response',
             action: options.action,
             model: step.model,
             keyLabel: key.label,
-            phase: 'response',
-            content: `${error.kind}: ${error.message}`,
+            message: `${step.model} не впорався: ${error.kind}`,
+            detail: error.message,
             durationMs,
             ok: false,
           });

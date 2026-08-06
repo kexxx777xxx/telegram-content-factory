@@ -86,10 +86,39 @@ export interface LlmImageResult {
   usage: LlmUsage;
 }
 
+/**
+ * A queued generation: submitted now, collected later at half price.
+ *
+ * Deliberately one request per job rather than many. Batching several prompts
+ * into one job would only pay off if they were all ready at the same moment and
+ * all allowed to wait the same 24 hours — and the moment one of them is needed
+ * sooner, the whole job has to be abandoned. One prompt per job keeps the unit
+ * of waiting the same as the unit of work.
+ */
+export interface LlmBatchHandle {
+  /** Vendor job name, stored so a restart can keep polling it. */
+  name: string;
+  state: LlmBatchState;
+}
+
+export type LlmBatchState = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'expired';
+
+export interface LlmBatchResult extends LlmBatchHandle {
+  text?: string;
+  /** Set when the model answered with an image rather than prose. */
+  image?: { data: Buffer; mimeType: string };
+  usage?: LlmUsage;
+  error?: string;
+}
+
 export interface LlmProvider {
   readonly name: AiProvider;
   generate(apiKey: string, request: LlmGenerateRequest): Promise<LlmGenerateResult>;
   /** Absent when the provider has no image models. */
   generateImage?(apiKey: string, request: LlmImageRequest): Promise<LlmImageResult>;
   listModels(apiKey: string): Promise<LlmModelInfo[]>;
+  /** Absent when the provider has no batch tier. */
+  submitBatch?(apiKey: string, request: LlmGenerateRequest): Promise<LlmBatchHandle>;
+  pollBatch?(apiKey: string, name: string): Promise<LlmBatchResult>;
+  cancelBatch?(apiKey: string, name: string): Promise<void>;
 }

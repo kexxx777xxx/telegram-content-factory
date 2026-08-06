@@ -2,6 +2,7 @@ import { env } from '../config.js';
 import { logger } from '../logger.js';
 import { workerPool } from '../queue/worker.js';
 import { startAdminBot, stopAdminBot } from '../telegram/adminBot.js';
+import { abandonExpired } from '../ai/batch.js';
 import { planTick } from './planner.js';
 import {
   ensureJitSlots,
@@ -42,6 +43,7 @@ async function safePlanTick(): Promise<void> {
 
 async function safePublisherTick(): Promise<void> {
   try {
+    await abandonExpired();
     await reclaimStuckPublishing(STUCK_PUBLISHING_MS);
     await reclaimStuckGenerating(STUCK_GENERATING_MS);
     await ensureJitSlots();

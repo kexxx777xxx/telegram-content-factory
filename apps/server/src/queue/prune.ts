@@ -3,13 +3,13 @@ import { config } from '../config.js';
 import { db } from '../db/client.js';
 import { events, jobs, posts } from '../db/schema.js';
 import { sweepStaging } from '../media/staging.js';
-import { pruneLogs } from '../services/postLog.js';
+import { pruneLogs } from '../services/activityLog.js';
 
 export interface PruneReport {
   events: number;
   jobs: number;
   postTexts: number;
-  postLogs: number;
+  logs: number;
   stagingOrphans: number;
 }
 
@@ -65,7 +65,7 @@ export async function runPrune(): Promise<PruneReport> {
     events: prunedEvents.length,
     jobs: prunedJobs.length,
     postTexts: prunedTexts,
-    postLogs: prunedLogs,
+    logs: prunedLogs,
     stagingOrphans: staging.orphansRemoved,
   };
 }

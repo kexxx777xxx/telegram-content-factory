@@ -5,7 +5,9 @@ import {
   JOB_STATUSES,
   JOB_TYPES,
   MISS_POLICIES,
-  POST_LOG_PHASES,
+  BATCH_STATES,
+  LOG_KINDS,
+  LOG_SOURCES,
   POST_STATUSES,
   PROJECT_STATUSES,
   PROMPT_SCOPES,
@@ -43,7 +45,9 @@ export const aiProviderEnum = pgEnum('ai_provider', AI_PROVIDERS);
 export const promptScopeEnum = pgEnum('prompt_scope', PROMPT_SCOPES);
 export const jobStatusEnum = pgEnum('job_status', JOB_STATUSES);
 export const jobTypeEnum = pgEnum('job_type', JOB_TYPES);
-export const postLogPhaseEnum = pgEnum('post_log_phase', POST_LOG_PHASES);
+export const batchStateEnum = pgEnum('batch_state', BATCH_STATES);
+export const logKindEnum = pgEnum('log_kind', LOG_KINDS);
+export const logSourceEnum = pgEnum('log_source', LOG_SOURCES);
 
 const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
@@ -91,11 +95,11 @@ export const projects = pgTable(
     missPolicy: missPolicyEnum('miss_policy').notNull().default('publish_late'),
 
     /**
-     * Post log switches. Off by default: the log holds full prompts and model
-     * output, which is exactly what nobody wants accumulating unasked.
+     * One switch for the whole journal. Two ("requests" and "responses") only
+     * ever got flipped together — a prompt without its answer explains nothing,
+     * and an answer without its prompt explains less.
      */
-    logRequests: boolean('log_requests').notNull().default(false),
-    logResponses: boolean('log_responses').notNull().default(false),
+    logEnabled: boolean('log_enabled').notNull().default(false),
     /** Days the log is kept; `prune` deletes older rows. */
     logRetentionDays: integer('log_retention_days').notNull().default(7),
 
@@ -127,6 +131,12 @@ export const apiKeys = pgTable(
     /** Used whenever nothing more specific is chosen. Exactly one may be set. */
     isDefault: boolean('is_default').notNull().default(false),
     enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Whether this key may use the batch tier — half price, up to 24 hours.
+     * Off by default and decided per key on purpose: batch is a paid-tier
+     * feature, so enabling it globally would break every free key at submit.
+     */
+    batchEnabled: boolean('batch_enabled').notNull().default(false),
     /** Soft cap enforced by the limiter; the shared global key gets the tightest one. */
     dailyRequestBudget: integer('daily_request_budget'),
     /** Proactive requests-per-minute ceiling. NULL = react to 429 only. */
@@ -381,34 +391,84 @@ export const events = pgTable(
   (t) => [index('events_recent_idx').on(t.createdAt), index('events_project_idx').on(t.projectId, t.kind)],
 );
 
-/* ── post log ─────────────────────────────────────────────────────────────── */
+/* ── batch jobs ───────────────────────────────────────────────────────────── */
 
 /**
- * What was asked of a model and what came back, per post.
+ * One queued generation on the vendor's batch tier.
  *
- * Deliberately a separate table from `events`: this one holds bulky text that a
- * project opts into and that `prune` deletes on its own schedule, while events
- * are small and always on. Image bytes are never written here — only which
- * model drew, how big the result was and whether the fallback fired. Storing
- * renders would rebuild the local image archive that ADR 0002 removed.
+ * The row exists so a restart does not lose track of work already paid for: the
+ * vendor job name is the only handle, and it lives nowhere else. `deadline` is
+ * ours, not theirs — the moment after which waiting stops being cheaper than
+ * simply generating the thing, because the slot it belongs to is approaching.
  */
-export const postLogs = pgTable(
-  'post_logs',
+export const batchJobs = pgTable(
+  'batch_jobs',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    postId: uuid('post_id')
-      .notNull()
-      .references(() => posts.id, { onDelete: 'cascade' }),
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
+    /** Null for work not tied to a slot — topic replenishment. */
+    postId: uuid('post_id').references(() => posts.id, { onDelete: 'cascade' }),
+    apiKeyId: uuid('api_key_id')
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: 'cascade' }),
     action: aiActionEnum('action').notNull(),
     model: text('model').notNull(),
+    /** Vendor job name; the handle for polling and cancelling. */
+    providerName: text('provider_name').notNull(),
+    state: batchStateEnum('state').notNull().default('pending'),
+    promptId: uuid('prompt_id'),
+    promptVersion: integer('prompt_version'),
+    /** Result text once collected; cleared when consumed. */
+    resultText: text('result_text'),
+    error: text('error'),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    /** After this moment the caller stops waiting and generates synchronously. */
+    deadline: timestamp('deadline', { withTimezone: true }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index('batch_jobs_state_idx').on(t.state, t.deadline),
+    index('batch_jobs_post_idx').on(t.postId, t.action),
+  ],
+);
+
+/* ── activity log ────────────────────────────────────────────────────────── */
+
+/**
+ * The channel's timeline: where each topic came from, what was asked of each
+ * model and what came back, and when the post went out.
+ *
+ * One table rather than one per concern, because the question it answers is
+ * always chronological — "why does this post look like this" is read top to
+ * bottom. `detail` holds the bulky text (a rendered prompt, a raw response) and
+ * is the only part that costs anything; image bytes never go in it, only a line
+ * saying which model drew and how big the result was. Storing renders would
+ * rebuild the local image archive ADR 0002 removed.
+ */
+export const logs = pgTable(
+  'logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    /** Null for project-wide entries: topic bank, buffer refills. */
+    postId: uuid('post_id').references(() => posts.id, { onDelete: 'cascade' }),
+    topicId: uuid('topic_id').references(() => topics.id, { onDelete: 'set null' }),
+    kind: logKindEnum('kind').notNull(),
+    action: aiActionEnum('action'),
+    model: text('model'),
     /** Which key paid, by label — the id would say nothing when read later. */
     keyLabel: text('key_label'),
-    /** `request` = rendered prompt, `response` = model output, `note` = metadata only. */
-    phase: postLogPhaseEnum('phase').notNull(),
-    content: text('content').notNull(),
+    source: logSourceEnum('source'),
+    /** One human-readable line; always present, always short. */
+    message: text('message').notNull(),
+    /** The bulky part: rendered prompt or raw model output. */
+    detail: text('detail'),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
     durationMs: integer('duration_ms'),
@@ -416,8 +476,8 @@ export const postLogs = pgTable(
     createdAt,
   },
   (t) => [
-    index('post_logs_post_idx').on(t.postId, t.createdAt),
-    index('post_logs_created_idx').on(t.createdAt),
+    index('logs_post_idx').on(t.postId, t.createdAt),
+    index('logs_project_idx').on(t.projectId, t.createdAt),
   ],
 );
 
@@ -435,4 +495,5 @@ export type NewPost = typeof posts.$inferInsert;
 export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type RateLimitRow = typeof rateLimitState.$inferSelect;
-export type PostLog = typeof postLogs.$inferSelect;
+export type LogRow = typeof logs.$inferSelect;
+export type BatchJob = typeof batchJobs.$inferSelect;

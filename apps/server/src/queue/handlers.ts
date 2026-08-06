@@ -16,9 +16,23 @@ async function handleReplenishTopics({ job, log }: JobContext): Promise<void> {
   const count = Number((job.payload as { count?: unknown }).count ?? 20);
 
   try {
-    const report = await replenishTopics(project.id, count, project.persona, project.language);
+    // The scheduled refill is the one place batching is unambiguously right:
+    // nothing waits on it, and the threshold is a minimum, so the bank still
+    // has topics while the vendor takes its hours.
+    const report = await replenishTopics(project.id, count, project.persona, project.language, {
+      allowBatch: true,
+    });
+
+    if (report === 'batched') {
+      throw new RescheduleJob(
+        new Date(Date.now() + BATCH_POLL_MS),
+        'Теми замовлені через batch, чекаємо на відповідь',
+      );
+    }
+
     log.info({ inserted: report.inserted, duplicates: report.duplicates }, 'replenish finished');
   } catch (err) {
+    if (err instanceof RescheduleJob) throw err;
     if (err instanceof ChainMissingError) {
       throw new PermanentJobFailure(err.message);
     }
@@ -38,7 +52,18 @@ async function handleGeneratePost({ job, log }: JobContext): Promise<void> {
   try {
     const outcome = await generatePostText(postId);
     log.info({ postId, outcome }, 'generate_post finished');
+
+    if (outcome === 'batched') {
+      // Parked on the batch tier. Rescheduling rather than failing is the whole
+      // point: no attempt is spent, and the worker is free while the vendor
+      // takes its hours.
+      throw new RescheduleJob(
+        new Date(Date.now() + BATCH_POLL_MS),
+        'Чекає на відповідь batch-джоби',
+      );
+    }
   } catch (err) {
+    if (err instanceof RescheduleJob) throw err;
     if (err instanceof PostNotFoundError || err instanceof ChainMissingError) {
       throw new PermanentJobFailure(err.message);
     }
@@ -49,12 +74,16 @@ async function handleGeneratePost({ job, log }: JobContext): Promise<void> {
   }
 }
 
+/** How often a parked job looks at its batch. Cheap call, no rush. */
+const BATCH_POLL_MS = 15 * 60_000;
+
 async function handlePublishPost({ job, log }: JobContext): Promise<void> {
   const postId = (job.payload as { postId?: unknown }).postId;
   if (typeof postId !== 'string') throw new PermanentJobFailure('publish_post без postId');
 
   try {
-    const outcome = await publishReadyPost(postId);
+    const manual = (job.payload as { manual?: unknown }).manual === true;
+    const outcome = await publishReadyPost(postId, manual ? 'manual' : 'auto');
     log.info({ postId, outcome }, 'publish finished');
   } catch (err) {
     if (err instanceof PublishThrottled) {
@@ -88,6 +117,8 @@ async function handleGenerateAndPublish(ctx: JobContext): Promise<void> {
   const postId = (ctx.job.payload as { postId?: unknown }).postId;
   if (typeof postId !== 'string') throw new PermanentJobFailure('generate_and_publish без postId');
 
+  // A RescheduleJob thrown by generation propagates, so publishing never runs
+  // on a post whose text has not arrived yet.
   await handleGeneratePost(ctx);
   await handlePublishPost(ctx);
 }

@@ -43,6 +43,7 @@ export async function listApiKeys(): Promise<ApiKeyDto[]> {
     secretMask: maskStoredSecret(key.secretEnc) ?? '···',
     isDefault: key.isDefault,
     enabled: key.enabled,
+    batchEnabled: key.batchEnabled,
     rpmLimit: key.rpmLimit,
     dailyRequestBudget: key.dailyRequestBudget,
     usageToday: {
@@ -72,6 +73,7 @@ export async function createApiKey(input: ApiKeyInput): Promise<string> {
         secretEnc: encryptSecret(input.secret),
         isDefault: input.isDefault,
         enabled: input.enabled,
+        batchEnabled: input.batchEnabled,
         rpmLimit: input.rpmLimit,
         dailyRequestBudget: input.dailyRequestBudget,
       })
@@ -103,6 +105,7 @@ export async function updateApiKey(id: string, patch: ApiKeyUpdate): Promise<voi
   if (patch.label !== undefined) values.label = patch.label;
   if (patch.enabled !== undefined) values.enabled = patch.enabled;
   if (patch.isDefault !== undefined) values.isDefault = patch.isDefault;
+  if (patch.batchEnabled !== undefined) values.batchEnabled = patch.batchEnabled;
   if (patch.rpmLimit !== undefined) values.rpmLimit = patch.rpmLimit;
   if (patch.dailyRequestBudget !== undefined) values.dailyRequestBudget = patch.dailyRequestBudget;
   // Empty string means "keep the stored secret" — same contract as bot tokens.

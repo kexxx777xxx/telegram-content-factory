@@ -98,12 +98,20 @@ topicsRouter.post('/projects/:id/topics/replenish', async (req, res) => {
   }
 
   try {
+    // The button means "give me topics now", so it never batches — but it does
+    // collect an answer a scheduled batch already produced.
     const report = await replenishTopics(
       project.id,
       parsed.data.count,
       project.persona,
       project.language,
     );
+
+    if (report === 'batched') {
+      res.status(202).json({ error: 'Теми ще готуються в batch-джобі, спробуйте за кілька хвилин' });
+      return;
+    }
+
     res.json(report);
   } catch (err) {
     if (err instanceof ChainMissingError || err instanceof ChainExhaustedError) {

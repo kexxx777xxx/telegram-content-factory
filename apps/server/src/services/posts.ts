@@ -1,6 +1,6 @@
 import type { PostStatus } from '@tcf/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
-import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js';
+import { ChainExhaustedError, ChainMissingError, runChain, type ChainRunResult } from '../ai/chain.js';
 import { db } from '../db/client.js';
 import { posts, projects, topics, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
@@ -8,9 +8,71 @@ import { generateImage } from '../media/pipeline.js';
 import { removeStagedImage } from '../media/staging.js';
 import { sendApprovalCard } from '../telegram/adminBot.js';
 import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
+import {
+  BATCH_MIN_SLACK_MS,
+  collectBatch,
+  dropBatch,
+  findBatch,
+  submitBatch,
+} from '../ai/batch.js';
+import { record } from './activityLog.js';
 import { takeNextTopic } from './topics.js';
 
 export class PostNotFoundError extends Error {}
+
+/**
+ * Text from the batch tier, or a decision about waiting for it.
+ *
+ * Returns a chain-shaped result when the answer is already in, `'waiting'`
+ * while it is still cooking, and `null` when batch is not on the table at all —
+ * so the caller's only branch is "did I get text".
+ */
+async function batchedText(
+  post: Post,
+  project: Project,
+  variables: Record<string, string | number | undefined>,
+): Promise<ChainRunResult | 'waiting' | null> {
+  const slack = post.scheduledAt.getTime() - Date.now();
+
+  const existing = await findBatch(post.id, 'post_text');
+  if (existing) {
+    const outcome = await collectBatch(existing.id);
+    if (outcome?.state === 'pending') return 'waiting';
+
+    await dropBatch(existing.id);
+    if (outcome?.state === 'succeeded' && outcome.text) {
+      return {
+        text: outcome.text,
+        model: existing.model,
+        apiKeyId: existing.apiKeyId,
+        promptId: existing.promptId ?? 'builtin',
+        promptVersion: existing.promptVersion ?? 0,
+        usage: {
+          inputTokens: outcome.job.inputTokens ?? 0,
+          outputTokens: outcome.job.outputTokens ?? 0,
+        },
+        attempts: [],
+      };
+    }
+    // Failed, cancelled or expired: fall through to the normal call rather
+    // than leave the slot with nothing.
+    return null;
+  }
+
+  if (slack < BATCH_MIN_SLACK_MS) return null;
+
+  const submitted = await submitBatch({
+    action: 'post_text',
+    projectId: project.id,
+    postId: post.id,
+    variables,
+    // Stop waiting well before the slot: the illustration still has to be made
+    // after the text arrives.
+    deadline: new Date(post.scheduledAt.getTime() - 2 * 3600_000),
+  });
+
+  return submitted ? 'waiting' : null;
+}
 
 /** Statuses a generation job may legitimately start from. */
 const GENERATABLE: PostStatus[] = ['planned', 'failed'];
@@ -53,7 +115,9 @@ export async function listPosts(projectId: string, limit = 100): Promise<Post[]>
  * than spending another model call and overwriting a draft someone may have
  * edited by hand.
  */
-export async function generatePostText(postId: string): Promise<'generated' | 'skipped'> {
+export async function generatePostText(
+  postId: string,
+): Promise<'generated' | 'skipped' | 'batched'> {
   const post = await getPost(postId);
   const log = logger.child({ post_id: post.id, project_id: post.projectId });
 
@@ -65,28 +129,47 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
   const [project] = await db.select().from(projects).where(eq(projects.id, post.projectId)).limit(1);
   if (!project) throw new ChainMissingError('Проєкт поста не існує');
 
+  /*
+   * The topic is claimed before anything else, because both paths need it: the
+   * batch prompt is rendered from it, and so is the synchronous one.
+   */
+  const topic = await ensureTopic(post, project);
+  if (!topic) {
+    throw new ChainMissingError('Немає доступної теми і не вдалося згенерувати нову');
+  }
+
+  const variables = {
+    topic: topic.title,
+    persona: project.persona,
+    language: project.language,
+    hashtags: project.hashtags.join(' '),
+  };
+
+  /*
+   * Batch first, when the slot is far enough away to afford a 24-hour answer.
+   *
+   * The status stays `planned` while waiting on purpose: `generating` means a
+   * model is working on it right now, and a post parked for a day is not that.
+   * It also keeps the post recoverable — a stuck-generation reaper would have
+   * nothing to reclaim here, because nothing is stuck.
+   */
+  const batched = await batchedText(post, project, variables);
+  if (batched === 'waiting') return 'batched';
+
   await db
     .update(posts)
     .set({ status: 'generating', error: null, updatedAt: new Date() })
     .where(eq(posts.id, post.id));
 
   try {
-    const topic = await ensureTopic(post, project);
-    if (!topic) {
-      throw new ChainMissingError('Немає доступної теми і не вдалося згенерувати нову');
-    }
-
-    const result = await runChain({
-      action: 'post_text',
-      projectId: project.id,
-      postId: post.id,
-      variables: {
-        topic: topic.title,
-        persona: project.persona,
-        language: project.language,
-        hashtags: project.hashtags.join(' '),
-      },
-    });
+    const result =
+      batched ??
+      (await runChain({
+        action: 'post_text',
+        projectId: project.id,
+        postId: post.id,
+        variables,
+      }));
 
     // The model was asked for a restricted tag set; this is what enforces it.
     const clean = sanitizeTelegramHtml(result.text);
@@ -131,6 +214,35 @@ export async function generatePostText(postId: string): Promise<'generated' | 's
         updatedAt: new Date(),
       })
       .where(eq(posts.id, post.id));
+
+    await record({
+      projectId: project.id,
+      postId: post.id,
+      topicId: topic.id,
+      kind: 'generation_step',
+      action: 'post_text',
+      model: result.model,
+      source: 'auto',
+      message: `Текст готовий: ${visibleLength(clean.html)} символів, модель ${result.model}, промпт v${result.promptVersion}`,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+    });
+
+    if (image) {
+      await record({
+        projectId: project.id,
+        postId: post.id,
+        kind: 'generation_step',
+        action: image.kind === 'image_model' ? 'image' : 'svg',
+        model: image.model,
+        source: 'auto',
+        message:
+          image.kind === 'svg_fallback'
+            ? 'Ілюстрація: резервна схема, модель не дала валідного SVG'
+            : `Ілюстрація готова (${image.kind}), модель ${image.model}`,
+        detail: image.notes.length > 0 ? image.notes.join('\n') : null,
+      });
+    }
 
     log.info(
       {

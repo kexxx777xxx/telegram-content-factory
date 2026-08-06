@@ -26,7 +26,16 @@ export async function enqueue(input: EnqueueInput): Promise<string | null> {
       type: input.type,
       projectId: input.projectId ?? null,
       payload: input.payload ?? {},
-      runAfter: input.runAfter ?? new Date(),
+      /*
+       * The database's clock, not ours.
+       *
+       * `claimJob` compares `run_after <= now()` inside Postgres, so a job
+       * stamped with the app's clock is invisible until the difference between
+       * the two elapses. On a container whose clock lags the host — the usual
+       * case after the VM sleeps — that is a silent delay on every job, and it
+       * showed up first as tests that claimed nothing they had just enqueued.
+       */
+      runAfter: input.runAfter ?? sql`now()`,
       priority: input.priority ?? 0,
       maxAttempts: input.maxAttempts ?? 5,
       dedupeKey: input.dedupeKey ?? null,

@@ -84,7 +84,7 @@ async function launch(post: Post, created: boolean): Promise<LaunchResult> {
     await enqueue({
       type: 'publish_post',
       projectId: post.projectId,
-      payload: { postId: post.id },
+      payload: { postId: post.id, manual: true },
       priority: 50,
       dedupeKey: `post:${post.id}:publish`,
     });
@@ -117,7 +117,7 @@ async function launch(post: Post, created: boolean): Promise<LaunchResult> {
   await enqueue({
     type: 'generate_and_publish',
     projectId: post.projectId,
-    payload: { postId: post.id },
+    payload: { postId: post.id, manual: true },
     priority: 40,
     dedupeKey: `post:${post.id}:generate_publish`,
   });

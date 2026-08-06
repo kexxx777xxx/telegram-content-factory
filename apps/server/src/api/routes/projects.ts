@@ -14,6 +14,7 @@ import {
   toDto,
   updateProject,
 } from '../../services/projects.js';
+import { projectLog } from '../../services/activityLog.js';
 import { launchProject, NotLaunchableError } from '../../services/publishNow.js';
 import { verifyTelegram } from '../../telegram/verify.js';
 
@@ -154,6 +155,30 @@ projectsRouter.post('/projects/:id/verify-telegram', async (req, res) => {
     'telegram verification',
   );
   res.json(check);
+});
+
+/** The channel's timeline: topics, buffer refills, generation steps, publications. */
+projectsRouter.get('/projects/:id/log', async (req, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: firstIssue(params.error) });
+    return;
+  }
+
+  const query = z
+    .object({ scope: z.enum(['all', 'project']).default('project'), limit: z.coerce.number().int().min(1).max(500).default(100) })
+    .safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: firstIssue(query.error) });
+    return;
+  }
+
+  res.json(
+    await projectLog(params.data.id, {
+      limit: query.data.limit,
+      onlyProjectWide: query.data.scope === 'project',
+    }),
+  );
 });
 
 /**

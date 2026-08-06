@@ -1,5 +1,5 @@
 import type { ApiKeyDto } from '@tcf/shared';
-import { AlertTriangle, Check, KeyRound, Loader2, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, KeyRound, Layers, Loader2, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { GenerationConfig } from '../components/GenerationConfig';
@@ -35,7 +35,7 @@ function ApiKeysCard({ keys, onChange }: { keys: ApiKeyDto[] | null; onChange: (
   return (
     <Card
       title="API-ключі"
-      hint="Ліміти й блокування після 429 рахуються окремо на кожен ключ. Один ключ — дефолтний: ним оплачується все, для чого не вибрано інший у проєкті чи в дії."
+      hint="Ліміти й блокування після 429 рахуються окремо на кожен ключ. Один ключ — дефолтний: ним оплачується все, для чого не вибрано інший у проєкті чи в дії. Batch вмикається окремо і лише на платному ключі."
     >
       <div className="space-y-4">
         {!keys ? (
@@ -90,6 +90,16 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
     }
   }
 
+  async function toggleBatch() {
+    setBusy(true);
+    try {
+      await api.updateKey(apiKey.id, { batchEnabled: !apiKey.batchEnabled });
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function makeDefault() {
     setBusy(true);
     try {
@@ -118,9 +128,23 @@ function KeyRow({ apiKey, onChange }: { apiKey: ApiKeyDto; onChange: () => void 
         <span className="font-medium">{apiKey.label}</span>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">{apiKey.secretMask}</code>
         {apiKey.isDefault && <Badge tone="green">дефолтний</Badge>}
+        {apiKey.batchEnabled && (
+          <Badge tone="amber">
+            <span title="Довгі задачі йдуть у batch: −50% ціни, відповідь до 24 год">batch</span>
+          </Badge>
+        )}
         {!apiKey.enabled && <Badge tone="red">вимкнено</Badge>}
 
         <span className="ml-auto flex items-center gap-2">
+          <Button
+            variant="secondary"
+            title="Batch — тариф із затримкою до 24 год за півціни. Працює лише на платному ключі."
+            onClick={() => void toggleBatch()}
+            disabled={busy}
+          >
+            <Layers className="size-4" />
+            {apiKey.batchEnabled ? 'Вимкнути batch' : 'Увімкнути batch'}
+          </Button>
           {!apiKey.isDefault && (
             <Button variant="secondary" onClick={() => void makeDefault()} disabled={busy}>
               <Star className="size-4" />
@@ -197,6 +221,7 @@ function AddKeyForm({
   const [secret, setSecret] = useState('');
   // The first key has to be the default, otherwise nothing can generate.
   const [isDefault, setIsDefault] = useState(!hasKeys);
+  const [batchEnabled, setBatchEnabled] = useState(false);
   const [rpmLimit, setRpmLimit] = useState('');
   const [dailyBudget, setDailyBudget] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -211,6 +236,7 @@ function AddKeyForm({
         label,
         secret,
         isDefault,
+        batchEnabled,
         enabled: true,
         rpmLimit: rpmLimit ? Number(rpmLimit) : null,
         dailyRequestBudget: dailyBudget ? Number(dailyBudget) : null,
@@ -242,6 +268,15 @@ function AddKeyForm({
               className="size-4 rounded border-slate-300"
             />
             Дефолтний ключ
+          </label>
+          <label className="flex items-center gap-2 py-1 text-sm">
+            <input
+              type="checkbox"
+              checked={batchEnabled}
+              onChange={(e) => setBatchEnabled(e.target.checked)}
+              className="size-4 rounded border-slate-300"
+            />
+            Дозволити batch (−50% ціни, до 24 год)
           </label>
         </Field>
         <Field label="Ліміт запитів/хв" hint="Порожньо — реагувати лише на 429.">

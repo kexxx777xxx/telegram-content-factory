@@ -15,7 +15,7 @@ import {
   updatePostText,
   type GenerationMeta,
 } from '../../services/posts.js';
-import { listPostLogs } from '../../services/postLog.js';
+import { postLog } from '../../services/activityLog.js';
 import { launchPost, NotLaunchableError } from '../../services/publishNow.js';
 import { badRequest, firstIssue } from './helpers.js';
 
@@ -94,7 +94,7 @@ postsRouter.get('/posts/:postId/logs', async (req, res) => {
   const params = postParam.safeParse(req.params);
   if (!params.success) return badRequest(res, firstIssue(params.error));
 
-  res.json(await listPostLogs(params.data.postId));
+  res.json(await postLog(params.data.postId));
 });
 
 postsRouter.get('/posts/:postId', async (req, res) => {

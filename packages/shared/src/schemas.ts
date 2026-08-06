@@ -5,7 +5,8 @@ import {
   KEY_LEVELS,
   IMAGE_MODES,
   MISS_POLICIES,
-  POST_LOG_PHASES,
+  LOG_KINDS,
+  LOG_SOURCES,
   POST_STATUSES,
   PROJECT_STATUSES,
   PROMPT_SCOPES,
@@ -102,9 +103,8 @@ const projectFields = {
   leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60),
   missPolicy: z.enum(MISS_POLICIES),
 
-  /** Post log switches; off by default (prompts and output are bulky). */
-  logRequests: z.boolean(),
-  logResponses: z.boolean(),
+  /** One switch for the journal; off by default (prompts and output are bulky). */
+  logEnabled: z.boolean(),
   logRetentionDays: z.number().int().min(1).max(365),
 
   schedule: scheduleSchema,
@@ -126,8 +126,7 @@ export const projectInputSchema = z.object({
   topicsBufferMin: projectFields.topicsBufferMin.default(10),
   leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
   missPolicy: projectFields.missPolicy.default('publish_late'),
-  logRequests: projectFields.logRequests.default(false),
-  logResponses: projectFields.logResponses.default(false),
+  logEnabled: projectFields.logEnabled.default(false),
   logRetentionDays: projectFields.logRetentionDays.default(7),
   schedule: projectFields.schedule.default(defaultSchedule),
 });
@@ -178,8 +177,7 @@ export const projectDtoSchema = z.object({
   topicsBufferMin: z.number().int(),
   leadTimeMinutes: z.number().int(),
   missPolicy: z.enum(MISS_POLICIES),
-  logRequests: z.boolean(),
-  logResponses: z.boolean(),
+  logEnabled: z.boolean(),
   logRetentionDays: z.number().int(),
   schedule: scheduleSchema,
 
@@ -243,6 +241,8 @@ export const apiKeyInputSchema = z.object({
   /** Used whenever nothing more specific is chosen. */
   isDefault: z.boolean().default(false),
   enabled: z.boolean().default(true),
+  /** Batch tier: half price, up to 24 h. Paid keys only. */
+  batchEnabled: z.boolean().default(false),
   /** Proactive per-minute ceiling. null = react to 429 only. */
   rpmLimit: z.number().int().min(1).max(10_000).nullable().default(null),
   dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable().default(null),
@@ -256,6 +256,7 @@ export const apiKeyUpdateSchema = z
     label: z.string().min(1).max(120),
     isDefault: z.boolean(),
     enabled: z.boolean(),
+    batchEnabled: z.boolean(),
     rpmLimit: z.number().int().min(1).max(10_000).nullable(),
     dailyRequestBudget: z.number().int().min(1).max(1_000_000).nullable(),
   })
@@ -270,6 +271,7 @@ export const apiKeyDtoSchema = z.object({
   secretMask: z.string(),
   isDefault: z.boolean(),
   enabled: z.boolean(),
+  batchEnabled: z.boolean(),
   rpmLimit: z.number().int().nullable(),
   dailyRequestBudget: z.number().int().nullable(),
   /** Today's counters, so budget pressure is visible before it bites. */
@@ -369,22 +371,25 @@ export const dryRunResultSchema = z.object({
 });
 export type DryRunResult = z.infer<typeof dryRunResultSchema>;
 
-/* ── post log ─────────────────────────────────────────────────────────────── */
+/* ── activity log ─────────────────────────────────────────────────────────────── */
 
-export const postLogEntrySchema = z.object({
+export const logEntrySchema = z.object({
   id: z.string().uuid(),
-  action: z.enum(AI_ACTIONS),
-  model: z.string(),
+  postId: z.string().uuid().nullable(),
+  kind: z.enum(LOG_KINDS),
+  action: z.enum(AI_ACTIONS).nullable(),
+  model: z.string().nullable(),
   keyLabel: z.string().nullable(),
-  phase: z.enum(POST_LOG_PHASES),
-  content: z.string(),
+  source: z.enum(LOG_SOURCES).nullable(),
+  message: z.string(),
+  detail: z.string().nullable(),
   inputTokens: z.number().int().nullable(),
   outputTokens: z.number().int().nullable(),
   durationMs: z.number().int().nullable(),
   ok: z.boolean(),
   createdAt: z.string(),
 });
-export type PostLogEntry = z.infer<typeof postLogEntrySchema>;
+export type LogEntry = z.infer<typeof logEntrySchema>;
 
 /* ── topics ───────────────────────────────────────────────────────────────── */
 

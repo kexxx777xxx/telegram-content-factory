@@ -37,8 +37,7 @@ async function main() {
     topicsBufferMin: 10,
     leadTimeMinutes: 180,
     missPolicy: 'publish_late',
-    logRequests: false,
-    logResponses: false,
+    logEnabled: false,
     logRetentionDays: 7,
     schedule: { mode: 'slots', slots: ['09:00', '13:00', '18:00'], weekdays: [] },
   });
@@ -60,8 +59,7 @@ async function main() {
     topicsBufferMin: 0,
     leadTimeMinutes: 0,
     missPolicy: 'skip',
-    logRequests: false,
-    logResponses: false,
+    logEnabled: false,
     logRetentionDays: 7,
     schedule: { mode: 'interval', intervalMinutes: 360, anchor: '10:00' },
   });

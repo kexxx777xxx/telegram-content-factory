@@ -2,9 +2,9 @@ import type { ProjectDto, ReplenishReportDto, TopicsPage } from '@tcf/shared';
 import { Check, Loader2, Sparkles, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { Badge, Button, Card, Field, Notice, Textarea } from './ui';
+import { Badge, Button, Field, Notice, Textarea } from './ui';
 
-export function TopicsCard({ project }: { project: ProjectDto }) {
+export function TopicBank({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<TopicsPage | null>(null);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<ReplenishReportDto | null>(null);
@@ -67,29 +67,35 @@ export function TopicsCard({ project }: { project: ProjectDto }) {
   const low = counts && !bankOff && counts.fresh < project.topicsBufferMin;
 
   return (
-    <Card
-      title="Банк тем"
-      hint={
-        bankOff
-          ? 'Банк вимкнено (мінімум = 0): тема запитуватиметься в моделі перед кожним постом.'
-          : `Коли вільних тем стає менше ${project.topicsBufferMin}, банк поповнюється автоматично.`
-      }
-    >
-      <div className="space-y-4">
+    <details className="group rounded-lg border border-slate-200 bg-slate-50">
+      <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium text-slate-700 hover:text-slate-900">
+        <span className="inline-block transition group-open:rotate-90">▸</span> Банк тем
         {counts && (
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <span className="flex items-center gap-1.5">
-              <strong className={low ? 'text-amber-600' : ''}>{counts.fresh}</strong>
-              <span className="text-slate-500">вільних</span>
+          <span className="ml-2 text-xs font-normal text-slate-500">
+            {counts.fresh} вільних · {counts.used} використано
+          </span>
+        )}
+        <span className="ml-2 text-xs font-normal text-slate-400">
+          {bankOff
+            ? 'вимкнено: тему запитують перед кожним постом'
+            : `поповнюється, коли вільних менше ${project.topicsBufferMin}`}
+        </span>
+      </summary>
+      <div className="space-y-4 border-t border-slate-200 px-3 py-3">
+        {counts && (
+          <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
+            <span>
+              <strong className={low ? 'text-amber-600' : 'text-slate-700'}>{counts.fresh}</strong>{' '}
+              вільних
             </span>
-            <span className="flex items-center gap-1.5 text-slate-500">
-              <strong>{counts.queued}</strong> в роботі
+            <span>
+              <strong className="text-slate-700">{counts.queued}</strong> в роботі
             </span>
-            <span className="flex items-center gap-1.5 text-slate-500">
-              <strong>{counts.used}</strong> використано
+            <span>
+              <strong className="text-slate-700">{counts.used}</strong> використано
             </span>
-            <span className="flex items-center gap-1.5 text-slate-500">
-              <strong>{counts.total}</strong> усього
+            <span>
+              <strong className="text-slate-700">{counts.total}</strong> усього
             </span>
           </div>
         )}
@@ -184,6 +190,6 @@ export function TopicsCard({ project }: { project: ProjectDto }) {
           </div>
         )}
       </div>
-    </Card>
+    </details>
   );
 }
