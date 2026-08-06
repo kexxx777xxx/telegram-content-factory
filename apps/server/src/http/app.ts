@@ -10,7 +10,7 @@ import { keysRouter } from '../api/routes/keys.js';
 import { postsRouter } from '../api/routes/posts.js';
 import { projectsRouter } from '../api/routes/projects.js';
 import { sessionRouter } from '../api/routes/session.js';
-import { topicsRouter } from '../api/routes/topics.js';
+import { ideasRouter } from '../api/routes/ideas.js';
 import { config, env } from '../config.js';
 import { logger } from '../logger.js';
 import { csrfGuard, requireAuth } from './auth.js';
@@ -66,7 +66,7 @@ export function createApp(): Express {
   api.use(projectsRouter);
   api.use(keysRouter);
   api.use(generationRouter);
-  api.use(topicsRouter);
+  api.use(ideasRouter);
   api.use(jobsRouter);
   api.use(postsRouter);
   app.use('/api', api);

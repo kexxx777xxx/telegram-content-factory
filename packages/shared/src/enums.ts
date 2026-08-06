@@ -23,6 +23,7 @@ export const SCHEDULE_MODES = ['slots', 'interval'] as const;
 export type ScheduleMode = (typeof SCHEDULE_MODES)[number];
 
 /**
+ * idea       — a subject only, no slot; the bank the planner draws from
  * planned    — slot reserved, nothing generated yet
  * generating — a worker holds it
  * ready      — text + image staged, waiting for its slot
@@ -31,6 +32,12 @@ export type ScheduleMode = (typeof SCHEDULE_MODES)[number];
  * published  — sent; text/svg/file wiped, only permalink remains
  */
 export const POST_STATUSES = [
+  /**
+   * A subject and nothing else, with no slot yet — what used to be a separate
+   * «topic». It is the same row as every other post: the difference between an
+   * idea and a scheduled post is a `scheduled_at`, not a table.
+   */
+  'idea',
   'planned',
   'generating',
   'ready',
@@ -51,11 +58,9 @@ export const BUFFERED_POST_STATUSES = [
   'publishing',
 ] as const;
 
-export const TOPIC_STATUSES = ['new', 'queued', 'used', 'rejected'] as const;
-export type TopicStatus = (typeof TOPIC_STATUSES)[number];
-
-export const TOPIC_SOURCES = ['ai', 'manual'] as const;
-export type TopicSource = (typeof TOPIC_SOURCES)[number];
+/** Who put the subject there. Survives on the post it became. */
+export const POST_SOURCES = ['ai', 'manual'] as const;
+export type PostSource = (typeof POST_SOURCES)[number];
 
 /** The five generation actions, each with its own model chain and prompt. */
 export const AI_ACTIONS = [

@@ -3,7 +3,7 @@ import type { LogSource } from '@tcf/shared';
 import { config } from '../config.js';
 import { record } from './activityLog.js';
 import { db } from '../db/client.js';
-import { events, posts, projects, topics } from '../db/schema.js';
+import { events, posts, projects } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { removeStagedImage, stagedImageExists } from '../media/staging.js';
 import { TelegramApiError } from '../telegram/api.js';
@@ -144,13 +144,11 @@ export async function publishReadyPost(
       })
       .where(eq(posts.id, post.id));
 
-    if (post.topicId) {
-      await tx
-        .update(topics)
-        .set({ status: 'used', usedAt: new Date() })
-        .where(and(eq(topics.id, post.topicId), eq(topics.status, 'queued')));
-    }
-
+    /*
+     * Nothing to mark elsewhere: the subject lives on this very row, so the
+     * post reaching `published` *is* the topic being used. The old code had to
+     * update a second table here and could leave the two disagreeing.
+     */
     await tx.insert(events).values({
       projectId: post.projectId,
       postId: post.id,
@@ -166,7 +164,6 @@ export async function publishReadyPost(
   await record({
     projectId: post.projectId,
     postId: post.id,
-    topicId: post.topicId,
     kind: 'publish',
     source,
     message: `Опубліковано ${source === 'manual' ? 'вручну' : 'за розкладом'}: ${permalink}`,

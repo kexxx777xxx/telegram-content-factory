@@ -1,13 +1,14 @@
 import { gzipSync } from 'node:zlib';
 import { config, env } from '../config.js';
+import { eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import {
   apiKeys,
   modelChains,
   modelChainSteps,
+  posts,
   projects,
   prompts,
-  topics,
 } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { adminApi } from '../telegram/adminApi.js';
@@ -32,13 +33,27 @@ export interface BackupResult {
 }
 
 export async function createBackup(): Promise<{ data: Buffer; meta: BackupResult }> {
-  const [projectRows, keyRows, promptRows, chainRows, stepRows, topicRows] = await Promise.all([
+  const [projectRows, keyRows, promptRows, chainRows, stepRows, ideaRows] = await Promise.all([
     db.select().from(projects),
     db.select().from(apiKeys),
     db.select().from(prompts),
     db.select().from(modelChains),
     db.select().from(modelChainSteps),
-    db.select().from(topics),
+    /*
+     * Only the idea rows, not every post. A curated bank of subjects is work
+     * that cannot be reproduced; a generated post can be, and published ones
+     * live in Telegram (ADR 0002).
+     */
+    db
+      .select({
+        projectId: posts.projectId,
+        topicTitle: posts.topicTitle,
+        normalizedHash: posts.normalizedHash,
+        category: posts.category,
+        source: posts.source,
+      })
+      .from(posts)
+      .where(eq(posts.status, 'idea')),
   ]);
 
   const snapshot = {
@@ -50,7 +65,7 @@ export async function createBackup(): Promise<{ data: Buffer; meta: BackupResult
     prompts: promptRows,
     modelChains: chainRows,
     modelChainSteps: stepRows,
-    topics: topicRows,
+    ideas: ideaRows,
   };
 
   const data = gzipSync(Buffer.from(JSON.stringify(snapshot, null, 1), 'utf8'));
@@ -66,7 +81,7 @@ export async function createBackup(): Promise<{ data: Buffer; meta: BackupResult
         apiKeys: keyRows.length,
         prompts: promptRows.length,
         chains: chainRows.length,
-        topics: topicRows.length,
+        ideas: ideaRows.length,
       },
     },
   };
@@ -94,7 +109,6 @@ export async function sendBackup(): Promise<BackupResult | null> {
   const { data, meta } = await createBackup();
   const caption = [
     '🗄 Бекап конфігурації',
-    `проєктів: ${meta.counts.projects}, ключів: ${meta.counts.apiKeys}, тем: ${meta.counts.topics}`,
     'Секрети зашифровані — без APP_ENCRYPTION_KEY не відновити.',
   ].join('\n');
 

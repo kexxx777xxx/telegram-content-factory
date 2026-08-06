@@ -85,6 +85,20 @@
       "when": 1786022246767,
       "tag": "0011_spicy_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786022247767,
+      "tag": "0012_idea_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786022248767,
+      "tag": "0013_topics_become_posts",
+      "breakpoints": true
     }
   ]
 }

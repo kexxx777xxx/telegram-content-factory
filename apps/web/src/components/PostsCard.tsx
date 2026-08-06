@@ -1,4 +1,4 @@
-import type { LogEntry, PostDto, PostsPage, ProjectDto, TopicsPage } from '@tcf/shared';
+import type { LogEntry, PostDto, PostsPage, ProjectDto } from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type LaunchResult } from '../api/client';
 import { formatDateTime, zoneDiffers } from '../lib/time';
 import { LaunchButton } from './LaunchButton';
-import { TopicRows } from './TopicRows';
+import { IdeaTools } from './IdeaTools';
 import { Badge, Button, Card, Input, Spoiler, Textarea } from './ui';
 
 /**
@@ -27,6 +27,11 @@ const STATUS: Record<
   string,
   { text: string; tone: 'neutral' | 'green' | 'amber' | 'red'; hint: string }
 > = {
+  idea: {
+    text: 'тема',
+    tone: 'neutral',
+    hint: 'Пост, у якого поки є лише «про що». Слот отримає, коли планувальник дійде до нього — або зараз, кнопкою.',
+  },
   planned: {
     text: 'заплановано',
     tone: 'neutral',
@@ -74,18 +79,13 @@ const CAPTION_LIMIT = 1024;
 
 export function PostsCard({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<PostsPage | null>(null);
-  const [topics, setTopics] = useState<TopicsPage | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
 
+  // One request: ideas arrive in the same list, as posts with status `idea`.
   const reload = useCallback(async () => {
-    const [posts, bank] = await Promise.all([
-      api.listPosts(project.id),
-      api.listTopics(project.id),
-    ]);
-    setPage(posts);
-    setTopics(bank);
+    setPage(await api.listPosts(project.id));
   }, [project.id]);
 
   useEffect(() => {
@@ -110,8 +110,8 @@ export function PostsCard({ project }: { project: ProjectDto }) {
       title="Пости"
       hint={
         project.postsBuffer === 0
-          ? 'Усе, що канал скаже: слоти з датою і теми, які ще чекають слоту. Буфер вимкнено — пост готується в момент слоту.'
-          : `Усе, що канал скаже: слоти з датою і теми, які ще чекають слоту. Планувальник тримає ${project.postsBuffer} ${project.postsBuffer === 1 ? 'слот' : 'слоти'} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
+          ? 'Один список: тема — це пост, у якого поки є лише «про що». Буфер вимкнено — пост готується в момент слоту.'
+          : `Один список: тема — це пост, у якого поки є лише «про що». Планувальник тримає ${project.postsBuffer} ${project.postsBuffer === 1 ? 'слот' : 'слоти'} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
       }
     >
       <div className="space-y-4">
@@ -129,22 +129,7 @@ export function PostsCard({ project }: { project: ProjectDto }) {
                 statusFilter === null ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              усі {page.posts.length + (topics?.counts.fresh ?? 0)}
-            </button>
-          )}
-          {topics && topics.counts.fresh > 0 && (
-            <button
-              type="button"
-              title="Теми без слоту: пост, у якого поки є лише про що. Слот отримають, коли планувальник дійде до них."
-              onClick={() => setStatusFilter(statusFilter === 'topic' ? null : 'topic')}
-              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition ${
-                statusFilter === 'topic'
-                  ? 'bg-slate-900 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              без слоту
-              <strong>{topics.counts.fresh}</strong>
+              усі {page.posts.length}
             </button>
           )}
           {page &&
@@ -209,14 +194,7 @@ export function PostsCard({ project }: { project: ProjectDto }) {
           </div>
         )}
 
-        {/*
-          Topics are posts that have nothing but a subject yet, so they are rows
-          in the same list rather than a separate bank. The only real difference
-          is that a slot has a date and a topic does not — which the row shows.
-        */}
-        {statusFilter === null || statusFilter === 'topic' ? (
-          <TopicRows project={project} query={query} onChanged={() => void reload()} />
-        ) : null}
+        <IdeaTools project={project} onChanged={() => void reload()} />
       </div>
     </Card>
   );
@@ -245,10 +223,12 @@ function PostRow({
   }, [post.textHtml]);
 
   const label = STATUS[post.status] ?? { text: post.status, tone: 'neutral' as const, hint: '' };
-  const slot = formatDateTime(post.scheduledAt, {
-    timezone: project.timezone,
-    withZone: zoneDiffers(project.timezone),
-  });
+  const slot = post.scheduledAt
+    ? formatDateTime(post.scheduledAt, {
+        timezone: project.timezone,
+        withZone: zoneDiffers(project.timezone),
+      })
+    : 'без слоту';
 
   const length = post.generation.visibleLength ?? 0;
   const overCaption = length > CAPTION_LIMIT;

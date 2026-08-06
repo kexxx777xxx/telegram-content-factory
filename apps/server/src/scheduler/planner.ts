@@ -5,7 +5,7 @@ import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
-import { needsReplenish, refillCount, topicCounts } from '../services/topics.js';
+import { ideaCounts, needsReplenish, promoteIdeaToSlot, refillCount } from '../services/ideas.js';
 import { computeSlots, projectJitterSeconds } from './slots.js';
 import { BATCH_MIN_SLACK_MS, canBatch } from '../ai/batch.js';
 
@@ -89,11 +89,25 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
     const slots = computeSlots(schedule, project.timezone, new Date(), project.postsBuffer);
 
     for (const slot of slots) {
-      const [created] = await db
-        .insert(posts)
-        .values({ projectId: project.id, scheduledAt: slot, status: 'planned' })
-        .onConflictDoNothing({ target: [posts.projectId, posts.scheduledAt] })
-        .returning({ id: posts.id });
+      /*
+       * An idea already in the bank *becomes* this slot's post — the same row,
+       * now with a time. Inserting a fresh post and marking the idea consumed
+       * would recreate the two-row arrangement that having one entity removed,
+       * and would leave the subject's dedup hash on a different row than the
+       * post that used it.
+       */
+      let created = await promoteIdeaToSlot(project.id, slot);
+
+      if (!created) {
+        // Bank empty: reserve the slot anyway. Generation asks for a subject
+        // when it runs, so an empty bank delays content, never the schedule.
+        const [bare] = await db
+          .insert(posts)
+          .values({ projectId: project.id, scheduledAt: slot, status: 'planned' })
+          .onConflictDoNothing({ target: [posts.projectId, posts.scheduledAt] })
+          .returning();
+        created = bare ?? null;
+      }
 
       if (!created) continue;
       postsPlanned++;
@@ -117,7 +131,7 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
     // Top the bank back up to its minimum rather than adding a fixed handful:
     // "поповнюється, коли менше 50" has to mean "поповнюється до 50", or the
     // threshold is hit again the next day with one topic more than before.
-    const counts = await topicCounts(project.id);
+    const counts = await ideaCounts(project.id);
     const enqueued = await enqueue({
       type: 'replenish_topics',
       projectId: project.id,

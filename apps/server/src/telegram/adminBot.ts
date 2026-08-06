@@ -161,7 +161,11 @@ export async function sendApprovalCard(postId: string): Promise<boolean> {
   const chatId = row.project.adminChatId ?? config.adminUserIds[0];
   if (!chatId) return false;
 
-  const slot = row.post.scheduledAt.toLocaleString('uk-UA', { timeZone: row.project.timezone });
+  // A post awaiting approval always has a slot, but the column is nullable now
+  // that ideas share the table — say so rather than assert.
+  const slot = row.post.scheduledAt
+    ? row.post.scheduledAt.toLocaleString('uk-UA', { timeZone: row.project.timezone })
+    : 'без слоту';
   const preview = (row.post.textHtml ?? '').slice(0, 700);
 
   const buttons: InlineButton[][] = [

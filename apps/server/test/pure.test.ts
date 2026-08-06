@@ -3,14 +3,14 @@ import { DateTime } from 'luxon';
 import { sanitizeTelegramHtml, visibleLength } from '../src/telegram/html.js';
 import { sanitizeSvg, SvgInvalidError } from '../src/media/svg/sanitize.js';
 import { fallbackSvg } from '../src/media/svg/fallback.js';
-import { normalizeTopic } from '../src/services/topics.js';
+import { normalizeTopic } from '../src/services/ideas.js';
 import { computeSlots, projectJitterSeconds } from '../src/scheduler/slots.js';
 import { buildPermalink } from '../src/telegram/permalink.js';
 import { splitForMessages } from '../src/telegram/publisher.js';
 import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
-import { MIN_REFILL_BATCH, refillCount } from '../src/services/topics.js';
+import { MIN_REFILL_BATCH, refillCount } from '../src/services/ideas.js';
 
 /** Everything here is pure — no database, no network. */
 

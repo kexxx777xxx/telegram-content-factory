@@ -12,8 +12,7 @@ import {
   PROMPT_SCOPES,
   PUBLISH_MODES,
   SCHEDULE_MODES,
-  TOPIC_SOURCES,
-  TOPIC_STATUSES,
+  POST_SOURCES,
 } from './enums.js';
 
 /** `HH:MM` in the project's own timezone. */
@@ -405,33 +404,8 @@ export type LogEntry = z.infer<typeof logEntrySchema>;
 
 /* ── topics ───────────────────────────────────────────────────────────────── */
 
-export const topicDtoSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string(),
-  normalizedHash: z.string(),
-  category: z.string().nullable(),
-  status: z.enum(TOPIC_STATUSES),
-  source: z.enum(TOPIC_SOURCES),
-  usedAt: z.string().nullable(),
-  createdAt: z.string(),
-});
-export type TopicDto = z.infer<typeof topicDtoSchema>;
-
-export const topicsPageSchema = z.object({
-  topics: z.array(topicDtoSchema),
-  counts: z.object({
-    /** Unclaimed topics — the number the replenish threshold compares against. */
-    fresh: z.number().int(),
-    queued: z.number().int(),
-    used: z.number().int(),
-    rejected: z.number().int(),
-    total: z.number().int(),
-  }),
-});
-export type TopicsPage = z.infer<typeof topicsPageSchema>;
-
 /** Free-text import: one title per line, optional `category | title` prefix. */
-export const topicsImportSchema = z.object({
+export const ideasImportSchema = z.object({
   text: z.string().min(1).max(50_000),
 });
 
@@ -455,9 +429,13 @@ export const postDtoSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
   status: z.enum(POST_STATUSES),
-  scheduledAt: z.string(),
+  /** Null while the row is still an idea — a subject with no slot yet. */
+  scheduledAt: z.string().nullable(),
   publishedAt: z.string().nullable(),
   topicTitle: z.string().nullable(),
+  /** Absorbed from the old topics table: an idea is just a post without a slot. */
+  category: z.string().nullable(),
+  source: z.enum(POST_SOURCES),
   /** null once published — only the permalink survives (ADR 0002). */
   textHtml: z.string().nullable(),
   imageKind: z.string().nullable(),

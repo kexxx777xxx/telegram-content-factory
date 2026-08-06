@@ -4,7 +4,7 @@ import { generatePostText, PostNotFoundError } from '../services/posts.js';
 import { NotPublishableError, publishReadyPost, PublishThrottled } from '../services/publish.js';
 import { TelegramApiError } from '../telegram/api.js';
 import { getProject } from '../services/projects.js';
-import { replenishTopics } from '../services/topics.js';
+import { replenishIdeas } from '../services/ideas.js';
 import { sendBackup } from '../services/backup.js';
 import { runPrune } from './prune.js';
 import { PermanentJobFailure, RescheduleJob, type HandlerRegistry, type JobContext } from './types.js';
@@ -19,7 +19,7 @@ async function handleReplenishTopics({ job, log }: JobContext): Promise<void> {
     // The scheduled refill is the one place batching is unambiguously right:
     // nothing waits on it, and the threshold is a minimum, so the bank still
     // has topics while the vendor takes its hours.
-    const report = await replenishTopics(project.id, count, project.persona, project.language, {
+    const report = await replenishIdeas(project.id, count, project.persona, project.language, {
       allowBatch: true,
     });
 

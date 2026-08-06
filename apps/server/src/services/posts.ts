@@ -2,7 +2,7 @@ import type { PostStatus } from '@tcf/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ChainExhaustedError, ChainMissingError, runChain, type ChainRunResult } from '../ai/chain.js';
 import { db } from '../db/client.js';
-import { posts, projects, topics, type Post, type Project } from '../db/schema.js';
+import { posts, projects, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { generateImage } from '../media/pipeline.js';
 import { removeStagedImage } from '../media/staging.js';
@@ -16,7 +16,7 @@ import {
   submitBatch,
 } from '../ai/batch.js';
 import { record } from './activityLog.js';
-import { takeNextTopic } from './topics.js';
+import { ensureSubject, insertIdeas } from './ideas.js';
 
 export class PostNotFoundError extends Error {}
 
@@ -32,7 +32,12 @@ async function batchedText(
   project: Project,
   variables: Record<string, string | number | undefined>,
 ): Promise<ChainRunResult | 'waiting' | null> {
-  const slack = post.scheduledAt.getTime() - Date.now();
+  /*
+   * No slot means nobody is waiting on a schedule — which sounds like the ideal
+   * batch candidate but is the opposite. A post without a slot is being run by
+   * hand, right now, and the cheap tier answers in up to a day.
+   */
+  const slot = post.scheduledAt;
 
   const existing = await findBatch(post.id, 'post_text');
   if (existing) {
@@ -59,7 +64,7 @@ async function batchedText(
     return null;
   }
 
-  if (slack < BATCH_MIN_SLACK_MS) return null;
+  if (!slot || slot.getTime() - Date.now() < BATCH_MIN_SLACK_MS) return null;
 
   const submitted = await submitBatch({
     action: 'post_text',
@@ -68,14 +73,14 @@ async function batchedText(
     variables,
     // Stop waiting well before the slot: the illustration still has to be made
     // after the text arrives.
-    deadline: new Date(post.scheduledAt.getTime() - 2 * 3600_000),
+    deadline: new Date(slot.getTime() - 2 * 3600_000),
   });
 
   return submitted ? 'waiting' : null;
 }
 
 /** Statuses a generation job may legitimately start from. */
-const GENERATABLE: PostStatus[] = ['planned', 'failed'];
+const GENERATABLE: PostStatus[] = ['idea', 'planned', 'failed'];
 
 export interface GenerationMeta {
   model?: string;
@@ -133,13 +138,19 @@ export async function generatePostText(
    * The topic is claimed before anything else, because both paths need it: the
    * batch prompt is rendered from it, and so is the synchronous one.
    */
-  const topic = await ensureTopic(post, project);
-  if (!topic) {
+  const withSubject = await ensureSubject(post, {
+    id: project.id,
+    persona: project.persona,
+    language: project.language,
+    topicsBufferMin: project.topicsBufferMin,
+  });
+  if (!withSubject?.topicTitle) {
     throw new ChainMissingError('Немає доступної теми і не вдалося згенерувати нову');
   }
+  const topicTitle = withSubject.topicTitle;
 
   const variables = {
-    topic: topic.title,
+    topic: topicTitle,
     persona: project.persona,
     language: project.language,
     hashtags: project.hashtags.join(' '),
@@ -180,7 +191,7 @@ export async function generatePostText(
     // Image generation happens after the text so the image-model branch can
     // describe what the post actually says, not just its topic.
     const image = await generateImage(
-      { id: post.id, topicTitle: topic.title, textHtml: clean.html },
+      { id: post.id, topicTitle, textHtml: clean.html },
       project,
     );
 
@@ -203,7 +214,6 @@ export async function generatePostText(
       .update(posts)
       .set({
         textHtml: clean.html,
-        topicTitle: topic.title,
         imagePath: image?.path ?? null,
         imageKind: image?.kind ?? null,
         // `svgSource` is kept only while the post is buffered; publishing clears it.
@@ -218,7 +228,6 @@ export async function generatePostText(
     await record({
       projectId: project.id,
       postId: post.id,
-      topicId: topic.id,
       kind: 'generation_step',
       action: 'post_text',
       model: result.model,
@@ -248,7 +257,7 @@ export async function generatePostText(
       {
         model: result.model,
         chars: meta.visibleLength,
-        topic: topic.title,
+        topic: topicTitle,
         image: image?.kind ?? 'none',
       },
       'post generated',
@@ -264,8 +273,10 @@ export async function generatePostText(
 
     return 'generated';
   } catch (err) {
-    // Back to `planned` so the queue's own retry can pick it up cleanly; the
-    // topic stays attached so a retry does not consume a second one.
+    // Back to `planned` so the queue's own retry can pick it up cleanly. The
+    // subject stays on the row, so a retry reuses it instead of draining the
+    // bank one attempt at a time — which is now automatic, the subject being
+    // part of the post rather than a row it points at.
     const terminal = err instanceof ChainMissingError;
     await db
       .update(posts)
@@ -276,46 +287,36 @@ export async function generatePostText(
       })
       .where(eq(posts.id, post.id));
 
-    if (terminal) await releaseTopic(post.topicId);
     throw err;
   }
 }
 
 /**
- * Binds a topic to the post before any model call.
+ * Puts the post's subject back in the bank and strips it from the post.
  *
- * Attaching it up front is what makes retries safe: the topic is claimed once,
- * and a failed attempt reuses the same one instead of draining the bank one
- * retry at a time.
+ * Used by «інша тема». The subject is re-filed as its own idea row rather than
+ * discarded: it was curated work, and the dedup hash travels with it so it
+ * cannot be proposed twice. A hash collision means an equivalent idea already
+ * exists, and dropping this one is then the right outcome.
  */
-async function ensureTopic(post: Post, project: Project) {
-  if (post.topicId) {
-    const [existing] = await db.select().from(topics).where(eq(topics.id, post.topicId)).limit(1);
-    if (existing) return existing;
+async function detachSubject(post: Post): Promise<void> {
+  if (post.topicTitle && post.normalizedHash) {
+    await db
+      .insert(posts)
+      .values({
+        projectId: post.projectId,
+        status: 'idea',
+        scheduledAt: null,
+        topicTitle: post.topicTitle,
+        normalizedHash: post.normalizedHash,
+        category: post.category,
+        source: post.source,
+      })
+      .onConflictDoNothing({
+        target: [posts.projectId, posts.normalizedHash],
+        where: sql`${posts.normalizedHash} is not null`,
+      });
   }
-
-  const topic = await takeNextTopic({
-    id: project.id,
-    persona: project.persona,
-    language: project.language,
-    topicsBufferMin: project.topicsBufferMin,
-  });
-  if (!topic) return null;
-
-  await db
-    .update(posts)
-    .set({ topicId: topic.id, topicTitle: topic.title, updatedAt: new Date() })
-    .where(eq(posts.id, post.id));
-
-  return topic;
-}
-
-async function releaseTopic(topicId: string | null): Promise<void> {
-  if (!topicId) return;
-  await db
-    .update(topics)
-    .set({ status: 'new' })
-    .where(and(eq(topics.id, topicId), eq(topics.status, 'queued')));
 }
 
 /** Manual edit of a draft. Sanitised on the way in, same as generated text. */
@@ -353,7 +354,7 @@ export async function resetForRegeneration(id: string, keepTopic: boolean): Prom
     throw new PostNotFoundError('Опублікований пост не перегенерувати');
   }
 
-  if (!keepTopic) await releaseTopic(post.topicId);
+  if (!keepTopic) await detachSubject(post);
   // Without this the previous render stays on disk with nothing referencing it.
   await removeStagedImage(post.imagePath);
 
@@ -373,7 +374,7 @@ export async function resetForRegeneration(id: string, keepTopic: boolean): Prom
       tgMessageId: null,
       tgExtraMessageIds: null,
       error: null,
-      ...(keepTopic ? {} : { topicId: null, topicTitle: null }),
+      ...(keepTopic ? {} : { topicTitle: null, normalizedHash: null, category: null }),
       updatedAt: new Date(),
     })
     .where(eq(posts.id, id))

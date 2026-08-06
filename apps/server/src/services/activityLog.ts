@@ -40,7 +40,6 @@ export function forgetLogSetting(projectId: string): void {
 export interface LogInput {
   projectId: string;
   postId?: string | null;
-  topicId?: string | null;
   kind: LogKind;
   message: string;
   detail?: string | null;
@@ -67,7 +66,6 @@ export async function record(input: LogInput): Promise<void> {
     await db.insert(logs).values({
       projectId: input.projectId,
       postId: input.postId ?? null,
-      topicId: input.topicId ?? null,
       kind: input.kind,
       action: input.action ?? null,
       model: input.model ?? null,

@@ -45,8 +45,12 @@
 
 ## Життєвий цикл поста
 
+Одна таблиця від ідеї до публікації — тема це пост без слоту, не окрема сутність
+([ADR 0007](adr/0007-one-entity-for-topics-and-posts.md)):
+
 ```
-planned → generating → ready ─(approval?)─→ publishing → published
+idea → planned → generating → ready ─(approval?)─→ publishing → published
+ └─ тема без слоту; слот отримує від планувальника або вручну
           ├─ text_html    у БД              ├─ text_html    → NULL
           ├─ svg_source   у БД              ├─ svg_source   → NULL
           └─ image_path   на диску          ├─ файл         → видалено
@@ -85,6 +89,9 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 
 ## Дедуп тем
 
+Теми й пости — один рядок, тож дедуп охоплює всю історію: хеш опублікованого поста лишається
+в тій самій таблиці й не дає темі повернутись.
+
 Дві лінії, бо жодна поодинці не працює.
 
 **Лексична — тверда гарантія.** `normalizeTopic()` зводить назву до ключа: нижній регістр,
@@ -100,7 +107,7 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 Стемер навмисно грубий: злити дві різні теми в один ключ коштує пропущеної теми, а не злити
 дублікати — коштує повторного поста. Перша помилка дешевша.
 
-Унікальність тримає індекс `topics_project_hash_uniq`, а не перевірка в коді: два паралельні
+Унікальність тримає індекс `posts_project_hash_uniq`, а не перевірка в коді: два паралельні
 джоби поповнення інакше обидва пройшли б перевірку в памʼяті.
 
 **Семантична — делегована промпту.** Порівняння рядків не спіймає синоніми й перефразування,
@@ -109,7 +116,7 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 
 ## Схема БД
 
-13 таблиць, `apps/server/src/db/schema.ts`:
+12 таблиць, `apps/server/src/db/schema.ts`:
 
 | Таблиця | Роль |
 | --- | --- |
@@ -117,8 +124,7 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
 | `api_keys` | ключі провайдерів, шифровані; рівно один із них дефолтний |
 | `prompts` | версіоновані промпти в трьох скоупах |
 | `model_chains` / `model_chain_steps` | ланцюжки моделей на дію |
-| `topics` | банк тем, дедуп за `normalized_hash` |
-| `posts` | слот + вміст (поки в буфері) + permalink (після публікації) |
+| `posts` | **усе, що канал скаже**: тема без слоту (`idea`), слот із вмістом, permalink після публікації. Дедуп за `normalized_hash` |
 | `logs` | журнал каналу: теми, буфер, кроки генерації, публікації, промпти й відповіді |
 | `batch_jobs` | замовлення на batch-тарифі: чим воно є, до якого моменту чекаємо |
 | `jobs` | черга з `dedupe_key` та `SKIP LOCKED` |
@@ -132,7 +138,7 @@ step.prompt_override  →  project prompt (action)  →  global default prompt (
   джоб, при цьому той самий ключ можна перевикористати після завершення.
 - `posts_slot_uniq` на `(project_id, scheduled_at)` — подвійний тік планувальника не створить
   два пости на один слот.
-- `topics_project_hash_uniq` — дедуп тем у межах проєкту.
+- `posts_project_hash_uniq` — партіальний унікальний на `(project_id, normalized_hash)`: дедуп тем у межах проєкту. Партіальний, бо пост, створений одразу зі слоту, ще не має теми — і саме тому `ON CONFLICT` мусить повторювати той самий предикат, інакше Postgres відмовляється виводити арбітр.
 - `jobs_claim_idx` партіальний на `pending` — claim не сканує історію.
 
 ## Черга й планувальник

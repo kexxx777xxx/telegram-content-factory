@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { encryptSecret } from '../src/crypto/secrets.js';
 import { closeDatabase, db } from '../src/db/client.js';
 import { assertTestDatabase } from './guard.js';
-import { apiKeys, jobs, posts, projects, topics } from '../src/db/schema.js';
+import { apiKeys, jobs, posts, projects } from '../src/db/schema.js';
 import { providers } from '../src/ai/gemini.js';
 import { LlmError, type LlmProvider } from '../src/ai/provider.js';
 import { ensureDefaultChains } from '../src/ai/chains.js';
@@ -70,7 +70,7 @@ const realGemini = providers.gemini!;
 async function reset(): Promise<void> {
   assertTestDatabase();
   await db.execute(
-    sql`truncate ${jobs}, ${posts}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
+    sql`truncate ${jobs}, ${posts}, ${apiKeys}, ${projects} restart identity cascade`,
   );
   fake.calls = [];
   fake.rateLimited.clear();
@@ -117,12 +117,14 @@ async function seedProjects(count: number): Promise<void> {
       })
       .returning({ id: projects.id });
 
-    await db.insert(topics).values(
+    await db.insert(posts).values(
+      // Ideas: posts with a subject and no slot, which the planner promotes.
       Array.from({ length: 4 }, (_, k) => ({
         projectId: project!.id,
-        title: `Тема ${i}-${k}`,
+        topicTitle: `Тема ${i}-${k}`,
         normalizedHash: `load-${i}-${k}`,
-        status: 'new' as const,
+        scheduledAt: null,
+        status: 'idea' as const,
         source: 'manual' as const,
       })),
     );
@@ -191,10 +193,18 @@ describe(`load: ${PROJECT_COUNT} projects sharing one slot`, () => {
     const second = await planTick();
     expect(second.postsPlanned).toBe(0);
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
+    // Counted by slot, not by row: ideas live in this table too now, so
+    // `count(*)` includes the four seeded per project minus the three promoted.
+    const [{ scheduled }] = await db
+      .select({ scheduled: sql<number>`count(*) filter (where scheduled_at is not null)::int` })
       .from(posts);
-    expect(count).toBe(PROJECT_COUNT * 3);
+    expect(scheduled).toBe(PROJECT_COUNT * 3);
+
+    // One idea per project is left over — promotion consumed three of four.
+    const [{ ideas }] = await db
+      .select({ ideas: sql<number>`count(*) filter (where status = 'idea')::int` })
+      .from(posts);
+    expect(ideas).toBe(PROJECT_COUNT);
   });
 
   it('spreads generation start times instead of firing them together', async () => {

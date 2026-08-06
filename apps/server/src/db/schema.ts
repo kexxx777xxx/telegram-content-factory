@@ -12,8 +12,7 @@ import {
   PROJECT_STATUSES,
   PROMPT_SCOPES,
   PUBLISH_MODES,
-  TOPIC_SOURCES,
-  TOPIC_STATUSES,
+  POST_SOURCES,
 } from '@tcf/shared';
 import { sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -38,8 +37,7 @@ export const imageModeEnum = pgEnum('image_mode', IMAGE_MODES);
 export const publishModeEnum = pgEnum('publish_mode', PUBLISH_MODES);
 export const missPolicyEnum = pgEnum('miss_policy', MISS_POLICIES);
 export const postStatusEnum = pgEnum('post_status', POST_STATUSES);
-export const topicStatusEnum = pgEnum('topic_status', TOPIC_STATUSES);
-export const topicSourceEnum = pgEnum('topic_source', TOPIC_SOURCES);
+export const postSourceEnum = pgEnum('post_source', POST_SOURCES);
 export const aiActionEnum = pgEnum('ai_action', AI_ACTIONS);
 export const aiProviderEnum = pgEnum('ai_provider', AI_PROVIDERS);
 export const promptScopeEnum = pgEnum('prompt_scope', PROMPT_SCOPES);
@@ -130,12 +128,9 @@ export const apiKeys = pgTable(
     provider: aiProviderEnum('provider').notNull().default('gemini'),
     label: text('label').notNull(),
     /**
-     * Stable display number: «Ключ 1», «Ключ 2».
-     *
-     * The id is what everything actually references, but a uuid tells an
-     * operator nothing and a label can be renamed. The number never moves, so
-     * "this project runs on Ключ 2" stays true across renames and across the
-     * default flag moving somewhere else.
+     * Stable ordering number. No longer shown — the label the operator typed is
+     * what they recognise — but it keeps the settings list in creation order and
+     * never shifts when a key is renamed or the default moves elsewhere.
      */
     slot: integer('slot').notNull().default(1),
     secretEnc: text('secret_enc').notNull(),
@@ -226,33 +221,17 @@ export const modelChainSteps = pgTable(
   (t) => [uniqueIndex('model_chain_steps_position_uniq').on(t.chainId, t.position)],
 );
 
-/* ── topics ───────────────────────────────────────────────────────────────── */
-
-export const topics = pgTable(
-  'topics',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    title: text('title').notNull(),
-    /** Lowercased, transliterated, punctuation-stripped — the real dedup key. */
-    normalizedHash: text('normalized_hash').notNull(),
-    category: text('category'),
-    status: topicStatusEnum('status').notNull().default('new'),
-    source: topicSourceEnum('source').notNull().default('ai'),
-    usedAt: timestamp('used_at', { withTimezone: true }),
-    createdAt,
-  },
-  (t) => [
-    uniqueIndex('topics_project_hash_uniq').on(t.projectId, t.normalizedHash),
-    index('topics_available_idx').on(t.projectId, t.status),
-  ],
-);
-
 /* ── posts ────────────────────────────────────────────────────────────────── */
 
 /**
+ * Every unit of content, at every stage of its life.
+ *
+ * A row starts as an `idea` — a subject, a dedup hash, no slot — and becomes a
+ * scheduled post when the planner gives it a `scheduled_at`. There is no
+ * separate topics table: an idea and a post differed only by having a slot, and
+ * two tables for one thing meant two APIs, two lists and two sets of actions
+ * for rows an operator reads as the same object.
+ *
  * `textHtml`, `svgSource` and `imagePath` hold content only while the post is
  * still in the buffer. On successful publish they are wiped and the row keeps
  * just metadata plus the permalink — Telegram becomes the archive.
@@ -264,14 +243,23 @@ export const posts = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    topicId: uuid('topic_id').references(() => topics.id, { onDelete: 'set null' }),
     status: postStatusEnum('status').notNull().default('planned'),
 
-    scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
+    /**
+     * Null while the post is still an `idea`: a subject with no slot yet.
+     * That nullability is the whole difference between the two — everything
+     * else about an idea and a scheduled post is identical, which is why they
+     * are one table rather than two.
+     */
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
     publishedAt: timestamp('published_at', { withTimezone: true }),
 
-    /** Denormalised so history stays readable after the topic row is gone. */
+    /** What the post is about. Present from the idea stage onwards. */
     topicTitle: text('topic_title'),
+    /** Lowercased, stemmed, token-sorted — the real dedup key. */
+    normalizedHash: text('normalized_hash'),
+    category: text('category'),
+    source: postSourceEnum('source').notNull().default('ai'),
 
     textHtml: text('text_html'),
     svgSource: text('svg_source'),
@@ -298,7 +286,20 @@ export const posts = pgTable(
   (t) => [
     index('posts_due_idx').on(t.status, t.scheduledAt),
     index('posts_project_idx').on(t.projectId, t.status, t.scheduledAt),
+    /*
+     * Ideas carry no slot, and Postgres treats every NULL as distinct, so any
+     * number of them coexist here while two real slots still cannot.
+     */
     uniqueIndex('posts_slot_uniq').on(t.projectId, t.scheduledAt),
+    /*
+     * Dedup, enforced by the database rather than a read-then-write check: two
+     * refill jobs running at once would both pass an in-memory test. Partial,
+     * because a post created straight from a slot has no subject to hash yet.
+     */
+    uniqueIndex('posts_project_hash_uniq')
+      .on(t.projectId, t.normalizedHash)
+      .where(sql`${t.normalizedHash} is not null`),
+    index('posts_idea_idx').on(t.projectId, t.status, t.createdAt),
   ],
 );
 
@@ -476,7 +477,6 @@ export const logs = pgTable(
       .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null for project-wide entries: topic bank, buffer refills. */
     postId: uuid('post_id').references(() => posts.id, { onDelete: 'cascade' }),
-    topicId: uuid('topic_id').references(() => topics.id, { onDelete: 'set null' }),
     kind: logKindEnum('kind').notNull(),
     action: aiActionEnum('action'),
     model: text('model'),
@@ -507,7 +507,6 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type Prompt = typeof prompts.$inferSelect;
 export type ModelChain = typeof modelChains.$inferSelect;
 export type ModelChainStep = typeof modelChainSteps.$inferSelect;
-export type Topic = typeof topics.$inferSelect;
 export type Post = typeof posts.$inferSelect;
 export type NewPost = typeof posts.$inferInsert;
 export type Job = typeof jobs.$inferSelect;

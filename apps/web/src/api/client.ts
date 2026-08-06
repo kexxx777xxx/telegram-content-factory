@@ -16,7 +16,6 @@ import type {
   ProjectUpdate,
   ReplenishReportDto,
   TelegramCheck,
-  TopicsPage,
 } from '@tcf/shared';
 
 export class ApiError extends Error {
@@ -175,25 +174,23 @@ export const api = {
       body: JSON.stringify({ keepTopic }),
     }),
 
-  listTopics: (projectId: string) => request<TopicsPage>(`/projects/${projectId}/topics`),
-  importTopics: (projectId: string, text: string) =>
+  /*
+   * No `listIdeas`: ideas come back from `listPosts` with `status: 'idea'`, and
+   * `publishPostNow` launches one like any other post. A second endpoint would
+   * be a second source of truth for one list.
+   */
+  importIdeas: (projectId: string, text: string) =>
     request<{ inserted: number; duplicates: number; titles: string[] }>(
-      `/projects/${projectId}/topics/import`,
+      `/projects/${projectId}/ideas/import`,
       { method: 'POST', body: JSON.stringify({ text }) },
     ),
-  replenishTopics: (projectId: string, count: number) =>
-    request<ReplenishReportDto>(`/projects/${projectId}/topics/replenish`, {
+  replenishIdeas: (projectId: string, count: number) =>
+    request<ReplenishReportDto>(`/projects/${projectId}/ideas/replenish`, {
       method: 'POST',
       body: JSON.stringify({ count }),
     }),
-  deleteTopics: (ids: string[]) =>
-    request<{ removed: number }>('/topics/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
-  /** Promotes a topic to a real post: generate only, or generate and publish. */
-  launchTopic: (topicId: string, publish: boolean) =>
-    request<LaunchResult>(`/topics/${topicId}/launch`, {
-      method: 'POST',
-      body: JSON.stringify({ publish }),
-    }),
+  deleteIdeas: (ids: string[]) =>
+    request<{ removed: number }>('/ideas/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
 
   dryRun: (projectId: string, input: DryRunInput) =>
     request<DryRunResult>(`/projects/${projectId}/dry-run`, {

@@ -44,6 +44,9 @@ export async function publisherTick(): Promise<PublisherReport> {
 
   for (const { post, project } of due) {
     const log = logger.child({ post_id: post.id, project_id: project.id });
+    // Ideas have no slot and are therefore never due; the query below only
+    // ever returns rows that have one, so this is a type guard, not a filter.
+    if (!post.scheduledAt) continue;
     const late = post.scheduledAt < graceCutoff;
 
     // Past the grace window with nothing ready. `publish_late` keeps waiting;

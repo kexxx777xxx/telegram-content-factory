@@ -1,13 +1,22 @@
-import type { TopicStatus } from '@tcf/shared';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { runChain } from '../ai/chain.js';
 import { db } from '../db/client.js';
-import { topics, type Topic } from '../db/schema.js';
+import { posts, type Post } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { collectBatch, dropBatch, findProjectBatch, submitBatch } from '../ai/batch.js';
 import { record } from './activityLog.js';
 
-export class TopicNotFoundError extends Error {}
+/**
+ * Ideas: posts that have a subject and nothing else yet.
+ *
+ * There is no separate table. An idea is a `posts` row with `status = 'idea'`
+ * and no `scheduled_at`, and it becomes a scheduled post by gaining a slot —
+ * the same row throughout. What used to be «the topic bank» is just the set of
+ * rows still in that state, and what used to be «claiming a topic» is a row
+ * changing status rather than one row pointing at another.
+ */
+
+export class IdeaNotFoundError extends Error {}
 
 /**
  * Words that carry no distinguishing meaning in a topic title. Dropping them
@@ -80,42 +89,41 @@ export function normalizeTopic(title: string): string {
   return unique.length > 0 ? unique.join('-') : title.toLowerCase().replace(/\s+/g, '-');
 }
 
-export interface TopicCounts {
-  /** Unclaimed. This — not the bank size — is what the replenish threshold compares against. */
+export interface IdeaCounts {
+  /** Still without a slot. This — not the total — is what the threshold compares against. */
   fresh: number;
-  /** Already handed to a post being generated; spoken for, not available. */
-  queued: number;
-  used: number;
-  rejected: number;
+  /** Given a slot and on their way; spoken for, not available. */
+  scheduled: number;
+  published: number;
   total: number;
 }
 
-export async function topicCounts(projectId: string): Promise<TopicCounts> {
+export async function ideaCounts(projectId: string): Promise<IdeaCounts> {
   const rows = await db
-    .select({ status: topics.status, count: sql<number>`count(*)::int` })
-    .from(topics)
-    .where(eq(topics.projectId, projectId))
-    .groupBy(topics.status);
+    .select({ status: posts.status, count: sql<number>`count(*)::int` })
+    .from(posts)
+    .where(eq(posts.projectId, projectId))
+    .groupBy(posts.status);
 
-  const by = (status: TopicStatus) => rows.find((r) => r.status === status)?.count ?? 0;
-  const fresh = by('new');
-  const queued = by('queued');
-  const used = by('used');
-  const rejected = by('rejected');
-  return { fresh, queued, used, rejected, total: fresh + queued + used + rejected };
+  const by = (status: string) => rows.find((r) => r.status === status)?.count ?? 0;
+  const fresh = by('idea');
+  const published = by('published');
+  const scheduled =
+    by('planned') + by('generating') + by('ready') + by('awaiting_approval') + by('publishing');
+  return { fresh, scheduled, published, total: rows.reduce((n, r) => n + r.count, 0) };
 }
 
 /**
  * Whether the bank has dropped below the project's threshold.
  *
- * Counts only `new`: a queued topic is already attached to a post in flight, so
- * treating it as stock would let the bank run dry while every remaining row is
- * spoken for. `topicsBufferMin = 0` disables the bank entirely — topics are
+ * Counts only rows still in `idea`: one that already has a slot is spoken for,
+ * so treating it as stock would let the bank run dry while every remaining row
+ * is committed. `topicsBufferMin = 0` disables the bank entirely — a subject is
  * then generated per post instead.
  */
 export async function needsReplenish(projectId: string, topicsBufferMin: number): Promise<boolean> {
   if (topicsBufferMin <= 0) return false;
-  const counts = await topicCounts(projectId);
+  const counts = await ideaCounts(projectId);
   return counts.fresh < topicsBufferMin;
 }
 
@@ -135,12 +143,13 @@ export function refillCount(fresh: number, topicsBufferMin: number): number {
   return Math.min(Math.max(missing, MIN_REFILL_BATCH), 50);
 }
 
-export async function listTopics(projectId: string, status?: TopicStatus): Promise<Topic[]> {
+/** The bank: rows that still have only a subject. */
+export async function listIdeas(projectId: string): Promise<Post[]> {
   return db
     .select()
-    .from(topics)
-    .where(status ? and(eq(topics.projectId, projectId), eq(topics.status, status)) : eq(topics.projectId, projectId))
-    .orderBy(desc(topics.createdAt))
+    .from(posts)
+    .where(and(eq(posts.projectId, projectId), eq(posts.status, 'idea')))
+    .orderBy(desc(posts.createdAt))
     .limit(500);
 }
 
@@ -151,12 +160,14 @@ export interface InsertReport {
 }
 
 /**
- * Inserts titles, silently dropping ones that collide on the normalized key.
+ * Files new subjects, silently dropping ones that collide on the normalized key.
  *
- * The uniqueness guarantee lives in `topics_project_hash_uniq`, not here — two
- * concurrent replenish jobs would otherwise both pass an in-memory check.
+ * The uniqueness guarantee lives in `posts_project_hash_uniq`, not here — two
+ * concurrent replenish jobs would otherwise both pass an in-memory check. The
+ * index spans every status, so a subject already published never comes back as
+ * a fresh idea.
  */
-export async function insertTopics(
+export async function insertIdeas(
   projectId: string,
   entries: { title: string; category?: string | null }[],
   source: 'ai' | 'manual',
@@ -177,48 +188,60 @@ export async function insertTopics(
 
   const values = [...byHash.entries()].map(([hash, entry]) => ({
     projectId,
-    title: entry.title,
+    topicTitle: entry.title,
     normalizedHash: hash,
     category: entry.category,
-    status: 'new' as const,
+    // No slot: that absence is what makes it an idea rather than a post.
+    scheduledAt: null,
+    status: 'idea' as const,
     source,
   }));
 
   const inserted = await db
-    .insert(topics)
+    .insert(posts)
     .values(values)
-    .onConflictDoNothing({ target: [topics.projectId, topics.normalizedHash] })
-    .returning({ id: topics.id, title: topics.title });
+    /*
+     * The index is partial (`where normalized_hash is not null`), and Postgres
+     * will not infer a partial arbiter unless the same predicate is repeated
+     * here — without it the insert fails outright rather than skipping the dupe.
+     */
+    .onConflictDoNothing({
+      target: [posts.projectId, posts.normalizedHash],
+      where: sql`${posts.normalizedHash} is not null`,
+    })
+    .returning({ id: posts.id, title: posts.topicTitle });
 
   for (const row of inserted) {
     await record({
       projectId,
-      topicId: row.id,
+      postId: row.id,
       kind: 'topic_created',
       source: source === 'ai' ? 'auto' : 'manual',
-      message: `Тема ${source === 'ai' ? 'згенерована' : 'додана вручну'}: ${row.title}`,
+      message: `Тема ${source === 'ai' ? 'згенерована' : 'додана вручну'}: ${row.title ?? ''}`,
     });
   }
 
   return {
     inserted: inserted.length,
     duplicates: cleaned.length - inserted.length,
-    titles: inserted.map((r) => r.title),
+    titles: inserted.map((r) => r.title ?? ''),
   };
 }
 
-export async function updateTopicStatus(id: string, status: TopicStatus): Promise<void> {
-  const [row] = await db
-    .update(topics)
-    .set({ status, ...(status === 'used' ? { usedAt: new Date() } : {}) })
-    .where(eq(topics.id, id))
-    .returning({ id: topics.id });
-  if (!row) throw new TopicNotFoundError('Тему не знайдено');
-}
-
-export async function deleteTopics(ids: string[]): Promise<number> {
+/**
+ * Drops ideas outright.
+ *
+ * Restricted to rows still in `idea`: once a subject has a slot it is a post
+ * with work behind it, and deleting it from the bank view would be a surprise.
+ * A published row must survive regardless — its hash is what stops the same
+ * subject coming back.
+ */
+export async function deleteIdeas(ids: string[]): Promise<number> {
   if (ids.length === 0) return 0;
-  const removed = await db.delete(topics).where(inArray(topics.id, ids)).returning({ id: topics.id });
+  const removed = await db
+    .delete(posts)
+    .where(and(inArray(posts.id, ids), eq(posts.status, 'idea')))
+    .returning({ id: posts.id });
   return removed.length;
 }
 
@@ -246,18 +269,21 @@ export interface ReplenishReport extends InsertReport {
  * Existing titles go into the prompt so the model can avoid semantic repeats —
  * the normalized-key check below only catches lexical ones.
  */
-export async function replenishTopics(
+export async function replenishIdeas(
   projectId: string,
   count: number,
   persona: string,
   language: string,
   options: { allowBatch?: boolean } = {},
 ): Promise<ReplenishReport | 'batched'> {
+  // Every subject the project has ever had, not just the unused ones: the model
+  // is being asked to avoid repeats, and a topic already published is the one it
+  // must avoid most.
   const existing = await db
-    .select({ title: topics.title })
-    .from(topics)
-    .where(eq(topics.projectId, projectId))
-    .orderBy(desc(topics.createdAt))
+    .select({ title: posts.topicTitle })
+    .from(posts)
+    .where(and(eq(posts.projectId, projectId), sql`${posts.topicTitle} is not null`))
+    .orderBy(desc(posts.createdAt))
     .limit(120);
 
   const variables = {
@@ -265,7 +291,7 @@ export async function replenishTopics(
     persona,
     language,
     existingTopics:
-      existing.length > 0 ? existing.map((t) => `- ${t.title}`).join('\n') : '(банк порожній)',
+      existing.length > 0 ? existing.map((t) => `- ${t.title ?? ''}`).join('\n') : '(банк порожній)',
   };
 
   /*
@@ -287,7 +313,7 @@ export async function replenishTopics(
     }));
 
   const parsed = parseTopics(result.text);
-  const report = await insertTopics(projectId, parsed, 'ai');
+  const report = await insertIdeas(projectId, parsed, 'ai');
 
   logger.info(
     {
@@ -374,55 +400,112 @@ function parseTopics(text: string): { title: string; category?: string | null }[
 }
 
 /**
- * Hands out the next topic for a post.
+ * Gives a slot-less subject to a post that has none.
  *
- * With `topicsBufferMin = 0` there is no bank to draw from, so a topic is
+ * Used only by the paths that make a bare post first — a just-in-time slot or a
+ * manual «publish now» on a project. The idea row is *absorbed*: its subject,
+ * hash and provenance move onto the waiting post and the idea row is deleted,
+ * so one subject never exists as two rows.
+ *
+ * With `topicsBufferMin = 0` there is no bank to draw from, so a subject is
  * generated on the spot — one more model call inside the critical path, which
  * is exactly the trade-off that mode makes explicit.
  */
-export async function takeNextTopic(project: {
+export async function ensureSubject(post: Post, project: {
   id: string;
   persona: string;
   language: string;
   topicsBufferMin: number;
-}): Promise<Topic | null> {
-  const claimed = await claimOne(project.id);
-  if (claimed) return claimed;
+}): Promise<Post | null> {
+  if (post.topicTitle && post.normalizedHash) return post;
 
-  logger.info({ projectId: project.id }, 'topic bank empty, generating on demand');
-  // No batching here by design: this call happens because a post needs a topic
+  const absorbed = await absorbIdea(post.id, project.id);
+  if (absorbed) return absorbed;
+
+  logger.info({ projectId: project.id }, 'idea bank empty, generating on demand');
+  // No batching here by design: this call happens because a post needs a subject
   // *now*, which is the one situation a 24-hour tier cannot serve.
-  await replenishTopics(project.id, project.topicsBufferMin === 0 ? 1 : 5, project.persona, project.language);
-  return claimOne(project.id);
+  await replenishIdeas(project.id, project.topicsBufferMin === 0 ? 1 : 5, project.persona, project.language);
+  return absorbIdea(post.id, project.id);
 }
 
 /**
- * `FOR UPDATE SKIP LOCKED` so two workers preparing different slots never hand
- * the same topic to both posts.
+ * Moves the oldest idea's subject onto `postId` and deletes the idea row.
+ *
+ * `FOR UPDATE SKIP LOCKED` so two workers preparing different slots never take
+ * the same subject. Both statements run in one transaction: a crash between
+ * them would either duplicate the subject or lose it.
  */
-async function claimOne(projectId: string): Promise<Topic | null> {
-  const result: unknown = await db.execute(sql`
-    update ${topics} set status = 'queued'
-    where id = (
-      select id from ${topics}
-      where ${topics.projectId} = ${projectId} and ${topics.status} = 'new'
-      order by ${topics.createdAt}
-      for update skip locked
-      limit 1
-    )
-    returning id
-  `);
+export async function absorbIdea(postId: string, projectId: string): Promise<Post | null> {
+  return db.transaction(async (tx) => {
+    const [idea] = await tx
+      .select()
+      .from(posts)
+      .where(and(eq(posts.projectId, projectId), eq(posts.status, 'idea')))
+      .orderBy(asc(posts.createdAt))
+      .limit(1)
+      .for('update', { skipLocked: true });
 
-  // `returning *` would hand back snake_case keys, since raw SQL skips
-  // Drizzle's column mapping — `normalizedHash` and `projectId` would read as
-  // undefined while their snake_case twins hold the values. Re-select typed.
-  const rows = Array.isArray(result)
-    ? (result as { id: string }[])
-    : (((result as { rows?: { id: string }[] }).rows ?? []) as { id: string }[]);
+    if (!idea) return null;
 
-  const id = rows[0]?.id;
-  if (!id) return null;
+    await tx.delete(posts).where(eq(posts.id, idea.id));
 
-  const [topic] = await db.select().from(topics).where(eq(topics.id, id)).limit(1);
-  return topic ?? null;
+    const [updated] = await tx
+      .update(posts)
+      .set({
+        topicTitle: idea.topicTitle,
+        normalizedHash: idea.normalizedHash,
+        category: idea.category,
+        source: idea.source,
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, postId))
+      .returning();
+
+    return updated ?? null;
+  });
+}
+
+/**
+ * Hands the next idea its slot — the planner's path.
+ *
+ * Promoting an existing row is what keeps the two states one entity: the
+ * alternative, inserting a fresh post and marking the idea consumed, is exactly
+ * the two-row arrangement this merge removed. Returns null when the bank is
+ * empty, and the caller creates a bare slot instead.
+ */
+export async function promoteIdeaToSlot(projectId: string, slot: Date): Promise<Post | null> {
+  return db.transaction(async (tx) => {
+    /*
+     * The slot may already hold a post from an earlier tick — the planner is
+     * idempotent and re-plans the same window every minute. Checking first
+     * keeps `posts_slot_uniq` as the backstop it was meant to be rather than a
+     * routine exception; the index still catches the race between two
+     * instances.
+     */
+    const [taken] = await tx
+      .select({ id: posts.id })
+      .from(posts)
+      .where(and(eq(posts.projectId, projectId), eq(posts.scheduledAt, slot)))
+      .limit(1);
+    if (taken) return null;
+
+    const [idea] = await tx
+      .select({ id: posts.id })
+      .from(posts)
+      .where(and(eq(posts.projectId, projectId), eq(posts.status, 'idea'), isNull(posts.scheduledAt)))
+      .orderBy(asc(posts.createdAt))
+      .limit(1)
+      .for('update', { skipLocked: true });
+
+    if (!idea) return null;
+
+    const [promoted] = await tx
+      .update(posts)
+      .set({ scheduledAt: slot, status: 'planned', updatedAt: new Date() })
+      .where(eq(posts.id, idea.id))
+      .returning();
+
+    return promoted ?? null;
+  });
 }

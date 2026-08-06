@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { jobs, posts, projects, topics, type Post } from '../db/schema.js';
+import { jobs, posts, projects, type Post } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { enqueue } from '../queue/enqueue.js';
 import { getPost, PostNotFoundError } from './posts.js';
@@ -46,7 +46,7 @@ export async function launchProject(projectId: string): Promise<LaunchResult> {
     .where(
       and(
         eq(posts.projectId, projectId),
-        inArray(posts.status, ['ready', 'awaiting_approval', 'planned', 'failed']),
+        inArray(posts.status, ['ready', 'awaiting_approval', 'planned', 'failed', 'idea']),
       ),
     )
     // Ready first: publishing something already paid for beats generating anew.
@@ -70,86 +70,24 @@ export async function launchProject(projectId: string): Promise<LaunchResult> {
   return { ...result, created: true };
 }
 
-/**
- * Turns one topic into a post and runs it.
- *
- * A topic *is* a post that only has its subject so far — that is why the list
- * shows both. It follows that everything the list offers a post has to work on
- * a topic too; otherwise the row looks managed and is not. The only thing the
- * topic lacks is a slot, so this gives it one and hands it to the same `launch`
- * every other manual run goes through.
- *
- * `publish: false` stops after generation, which is how a topic gets pulled
- * into the buffer ahead of its turn without being pushed into the channel.
- */
-export async function launchTopic(
-  topicId: string,
-  options: { publish: boolean },
-): Promise<LaunchResult> {
-  const [topic] = await db.select().from(topics).where(eq(topics.id, topicId)).limit(1);
-  if (!topic) throw new NotLaunchableError('Тему не знайдено');
-  if (topic.status === 'used') throw new NotLaunchableError('Тему вже використано в пості');
-
-  // Claimed before the post exists: two clicks on the same row would otherwise
-  // each get a slot, and the topic would go out twice.
-  const claimed = await db
-    .update(topics)
-    .set({ status: 'queued' })
-    .where(and(eq(topics.id, topicId), eq(topics.status, 'new')))
-    .returning({ id: topics.id });
-
-  if (claimed.length === 0) {
-    const existing = await db
-      .select()
-      .from(posts)
-      .where(and(eq(posts.topicId, topicId), ne(posts.status, 'published')))
-      .limit(1);
-    const [post] = existing;
-    if (post) return launch(post, false);
-    throw new NotLaunchableError('Тема вже в роботі');
-  }
-
-  const [row] = await db
-    .insert(posts)
-    .values({
-      projectId: topic.projectId,
-      scheduledAt: freeSlot(),
-      status: 'planned',
-      topicId: topic.id,
-      topicTitle: topic.title,
-    })
-    .returning();
-
-  if (!row) {
-    await db.update(topics).set({ status: 'new' }).where(eq(topics.id, topicId));
-    throw new NotLaunchableError('Не вдалося створити слот для теми');
-  }
-
-  logger.info({ post_id: row.id, topic_id: topic.id }, 'topic promoted to a post');
-
-  if (options.publish) return { ...(await launch(row, true)), created: true };
-
-  await enqueue({
-    type: 'generate_post',
-    projectId: row.projectId,
-    payload: { postId: row.id, manual: true },
-    priority: 40,
-    dedupeKey: `post:${row.id}:generate`,
-  });
-  return { postId: row.id, job: 'generate_post', created: true };
-}
-
-/**
- * `posts_slot_uniq` covers `(project_id, scheduled_at)`, so launching two
- * topics inside the same millisecond would collide. Nudging by a random second
- * is enough — the slot time carries no meaning for a manual run.
- */
-function freeSlot(): Date {
-  return new Date(Date.now() + Math.floor(Math.random() * 1000));
-}
-
 async function launch(post: Post, created: boolean): Promise<LaunchResult> {
   const log = logger.child({ post_id: post.id, project_id: post.projectId });
+
+  /*
+   * An idea has no slot, and a manual run is exactly the moment it earns one.
+   * Since the merge this needs no special path: the row already *is* the post,
+   * so giving it a time is the whole promotion.
+   */
+  if (!post.scheduledAt) {
+    const [scheduled] = await db
+      .update(posts)
+      .set({ scheduledAt: freeSlot(), status: 'planned', updatedAt: new Date() })
+      .where(eq(posts.id, post.id))
+      .returning();
+    if (!scheduled) throw new NotLaunchableError('Не вдалося призначити слот');
+    post = scheduled;
+    created = true;
+  }
 
   if (post.status === 'published') {
     throw new NotLaunchableError('Пост уже опубліковано');
@@ -201,6 +139,15 @@ async function launch(post: Post, created: boolean): Promise<LaunchResult> {
   });
   log.info({ status: post.status }, 'manual generate-and-publish queued');
   return { postId: post.id, job: 'generate_and_publish', created };
+}
+
+/**
+ * `posts_slot_uniq` covers `(project_id, scheduled_at)`, so launching two ideas
+ * inside the same millisecond would collide. Nudging by a random fraction of a
+ * second is enough — the slot time carries no meaning for a manual run.
+ */
+function freeSlot(): Date {
+  return new Date(Date.now() + Math.floor(Math.random() * 1000));
 }
 
 export { PostNotFoundError };

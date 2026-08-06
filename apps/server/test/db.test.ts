@@ -11,7 +11,6 @@ import {
   posts,
   projects,
   prompts,
-  topics,
   type Project,
 } from '../src/db/schema.js';
 import { encryptSecret } from '../src/crypto/secrets.js';
@@ -21,11 +20,11 @@ import { acquire, openCircuit } from '../src/ai/rateLimiter.js';
 import { resolveKey } from '../src/ai/keys.js';
 import { ensureDefaultChains } from '../src/ai/chains.js';
 import { planTick } from '../src/scheduler/planner.js';
-import { launchPost, launchProject, launchTopic, NotLaunchableError } from '../src/services/publishNow.js';
+import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
 import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
 import { abandonExpired, BATCH_MIN_SLACK_MS, submitBatch } from '../src/ai/batch.js';
 import { ensureDefaultPrompts, resolvePrompt, savePromptVersion } from '../src/prompts/resolve.js';
-import { insertTopics, needsReplenish, topicCounts } from '../src/services/topics.js';
+import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
 import { resetForRegeneration } from '../src/services/posts.js';
 import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 
@@ -38,7 +37,7 @@ import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 async function reset(): Promise<void> {
   assertTestDatabase();
   await db.execute(
-    sql`truncate ${jobs}, ${posts}, ${logs}, ${batchJobs}, ${topics}, ${apiKeys}, ${projects} restart identity cascade`,
+    sql`truncate ${jobs}, ${posts}, ${logs}, ${batchJobs}, ${apiKeys}, ${projects} restart identity cascade`,
   );
 }
 
@@ -321,7 +320,7 @@ describe('activity log', () => {
 
   it('records where a topic came from', async () => {
     const project = await makeProject({ logEnabled: true });
-    await insertTopics(project.id, [{ title: 'Ідемпотентність у чергах' }], 'manual');
+    await insertIdeas(project.id, [{ title: 'Ідемпотентність у чергах' }], 'manual');
 
     const [entry] = await projectLog(project.id);
     expect(entry?.kind).toBe('topic_created');
@@ -393,71 +392,70 @@ describe('batch reaches the buffer at all', () => {
   });
 });
 
-describe('launching a topic', () => {
+describe('launching an idea', () => {
   /*
-   * A topic is a post that only has its subject, so the list offers it the same
-   * actions. Promoting it must claim the topic and bind it to the new post —
-   * otherwise the next generation would take it a second time.
+   * The merge's payoff, stated as a test: an idea needs no special launch path
+   * because it already *is* a post. `launchPost` gives it a slot and runs it,
+   * the same call the list makes for every other row.
    */
-  async function newTopic(projectId: string, title = 'Тема для запуску') {
-    await insertTopics(projectId, [{ title }], 'manual');
+  async function newIdea(projectId: string, title = 'Тема для запуску') {
+    await insertIdeas(projectId, [{ title }], 'manual');
     const [row] = await db
       .select()
-      .from(topics)
-      .where(and(eq(topics.projectId, projectId), eq(topics.title, title)))
+      .from(posts)
+      .where(and(eq(posts.projectId, projectId), eq(posts.topicTitle, title)))
       .limit(1);
     return row!;
   }
 
-  it('turns a topic into a post bound to it', async () => {
+  it('is a post already, so launching it only assigns a slot', async () => {
     const project = await makeProject();
-    const topic = await newTopic(project.id);
+    const idea = await newIdea(project.id);
+    expect(idea.status).toBe('idea');
+    expect(idea.scheduledAt).toBeNull();
 
-    const result = await launchTopic(topic.id, { publish: false });
+    const result = await launchPost(idea.id);
 
-    const [post] = await db.select().from(posts).where(eq(posts.id, result.postId)).limit(1);
-    expect(post?.topicId).toBe(topic.id);
-    expect(post?.topicTitle).toBe('Тема для запуску');
-    expect(result.job).toBe('generate_post');
-
-    const [after] = await db.select().from(topics).where(eq(topics.id, topic.id)).limit(1);
-    expect(after?.status).toBe('queued');
-  });
-
-  it('queues generate-and-publish when asked to publish', async () => {
-    const project = await makeProject();
-    const topic = await newTopic(project.id);
-
-    const result = await launchTopic(topic.id, { publish: true });
-
+    // The same row, not a new one — that is the whole point of one entity.
+    expect(result.postId).toBe(idea.id);
+    const [after] = await db.select().from(posts).where(eq(posts.id, idea.id)).limit(1);
+    expect(after?.scheduledAt).not.toBeNull();
+    expect(after?.topicTitle).toBe('Тема для запуску');
     expect(result.job).toBe('generate_and_publish');
-    const [job] = await db
-      .select()
-      .from(jobs)
-      .where(eq(jobs.dedupeKey, `post:${result.postId}:generate_publish`))
-      .limit(1);
-    expect(job).toBeDefined();
   });
 
-  /** Two clicks on the same row must not put the topic in the channel twice. */
-  it('does not create a second post for a topic already launched', async () => {
+  it('creates no second row for the same subject', async () => {
     const project = await makeProject();
-    const topic = await newTopic(project.id);
+    const idea = await newIdea(project.id);
 
-    const first = await launchTopic(topic.id, { publish: false });
-    const second = await launchTopic(topic.id, { publish: false });
+    await launchPost(idea.id);
+    const rows = await db.select().from(posts).where(eq(posts.projectId, project.id));
 
-    expect(second.postId).toBe(first.postId);
-    const rows = await db.select().from(posts).where(eq(posts.topicId, topic.id));
     expect(rows).toHaveLength(1);
   });
 
-  it('refuses a topic already used by a published post', async () => {
+  it('refuses one that is already published', async () => {
     const project = await makeProject();
-    const topic = await newTopic(project.id);
-    await db.update(topics).set({ status: 'used' }).where(eq(topics.id, topic.id));
+    const idea = await newIdea(project.id);
+    await db
+      .update(posts)
+      .set({ status: 'published', scheduledAt: new Date() })
+      .where(eq(posts.id, idea.id));
 
-    await expect(launchTopic(topic.id, { publish: true })).rejects.toBeInstanceOf(NotLaunchableError);
+    await expect(launchPost(idea.id)).rejects.toBeInstanceOf(NotLaunchableError);
+  });
+
+  it('keeps the subject when the planner gives it a slot', async () => {
+    const project = await makeProject({ status: 'active', postsBuffer: 1 });
+    await ensureDefaultPrompts();
+    const idea = await newIdea(project.id, 'Тема під планувальник');
+
+    await planTick();
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, idea.id)).limit(1);
+    expect(after?.status).toBe('planned');
+    expect(after?.scheduledAt).not.toBeNull();
+    expect(after?.topicTitle).toBe('Тема під планувальник');
   });
 });
 
@@ -722,7 +720,7 @@ describe('topic bank', () => {
   it('collapses duplicates inside a batch and across batches', async () => {
     const project = await makeProject();
 
-    const first = await insertTopics(
+    const first = await insertIdeas(
       project.id,
       [
         { title: 'Circuit Breaker у мікросервісах' },
@@ -734,7 +732,7 @@ describe('topic bank', () => {
     expect(first.inserted).toBe(2);
     expect(first.duplicates).toBe(1);
 
-    const second = await insertTopics(
+    const second = await insertIdeas(
       project.id,
       [{ title: 'Патерн Circuit Breaker мікросервіси' }],
       'ai',
@@ -742,22 +740,22 @@ describe('topic bank', () => {
     expect(second.inserted).toBe(0);
   });
 
-  it('counts only unclaimed topics against the replenish threshold', async () => {
+  it('counts only slot-less ideas against the replenish threshold', async () => {
     const project = await makeProject({ topicsBufferMin: 2 });
-    await insertTopics(project.id, [{ title: 'Тема одна' }, { title: 'Тема друга' }], 'manual');
+    await insertIdeas(project.id, [{ title: 'Тема одна' }, { title: 'Тема друга' }], 'manual');
 
     expect(await needsReplenish(project.id, 2)).toBe(false);
 
-    // A queued topic is attached to a post in flight; treating it as stock
-    // would let the bank run dry while every row is spoken for.
+    // Given a slot, a row is spoken for; counting it as stock would let the
+    // bank run dry while every remaining subject is already committed.
     await db
-      .update(topics)
-      .set({ status: 'queued' })
-      .where(and(eq(topics.projectId, project.id), eq(topics.title, 'Тема одна')));
+      .update(posts)
+      .set({ status: 'planned', scheduledAt: new Date(Date.now() + 3600_000) })
+      .where(and(eq(posts.projectId, project.id), eq(posts.topicTitle, 'Тема одна')));
 
-    const counts = await topicCounts(project.id);
+    const counts = await ideaCounts(project.id);
     expect(counts.fresh).toBe(1);
-    expect(counts.queued).toBe(1);
+    expect(counts.scheduled).toBe(1);
     expect(await needsReplenish(project.id, 2)).toBe(true);
   });
 

@@ -87,9 +87,12 @@ export async function getDashboard(graceMinutes: number): Promise<DashboardData>
     .where(and(inArray(posts.status, ['failed', 'skipped']), gte(posts.updatedAt, weekAgo)))
     .groupBy(posts.projectId, posts.status);
 
+  // Ideas are posts now; the old `topics` table is gone. Raw SQL against it
+  // typechecked fine and would only have failed at runtime, which is exactly
+  // why this one needed finding by hand.
   const topicRows = await db.execute(sql`
     select project_id, count(*)::int as fresh
-    from topics where status = 'new' group by project_id
+    from posts where status = 'idea' group by project_id
   `);
   const freshByProject = new Map<string, number>();
   for (const row of rowsOf<{ project_id: string; fresh: number }>(topicRows)) {
