@@ -3,15 +3,17 @@ import {
   AlertCircle,
   Check,
   ExternalLink,
+  FileText,
+  Image as ImageIcon,
   Loader2,
   RefreshCw,
   RotateCcw,
   Save,
-  Send,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, type LaunchResult } from '../api/client';
-import { formatDateTime, zoneDiffers } from '../lib/time';
+import { formatDateTime } from '../lib/time';
 import { LaunchButton } from './LaunchButton';
 import { IdeaTools } from './IdeaTools';
 import { Badge, Button, Card, Input, Spoiler, Textarea } from './ui';
@@ -35,7 +37,7 @@ const STATUS: Record<
   planned: {
     text: 'заплановано',
     tone: 'neutral',
-    hint: 'Слот заброньовано, до моделі ще ніхто не звертався. Генерація стартує за lead time до публікації.',
+    hint: 'Час публікації заброньовано, до моделі ще ніхто не звертався. Генерація стартує за «запас часу» до слоту — а якщо тему ще не взято з банку, вона візьметься тоді ж.',
   },
   generating: {
     text: 'генерується',
@@ -75,11 +77,113 @@ const STATUS: Record<
 };
 
 
+/**
+ * Statuses in which a post is supposed to be fully assembled.
+ *
+ * Before that, missing text is the normal state of affairs and flagging it
+ * would light up the whole list; after publishing the content is deliberately
+ * gone (ADR 0002) and only the permalink remains.
+ */
+const CONTENT_EXPECTED: string[] = ['ready', 'awaiting_approval', 'publishing'];
+
+/** Sentinel for the cross-status filter; no post ever has this as a status. */
+const PROBLEM_FILTER = '__problems__';
+
+/**
+ * A post is "проблемний" when a human has to do something about it.
+ *
+ * Not the same as `failed`: a post sitting in `ready` with no image is on
+ * course to publish a format the channel never uses, and nothing in the status
+ * chips says so.
+ */
+function isProblem(post: PostDto, imageExpected: boolean): boolean {
+  if (post.status === 'failed' || post.status === 'skipped') return true;
+  if (post.error) return true;
+  if (!CONTENT_EXPECTED.includes(post.status)) return false;
+  return post.textHtml === null || (imageExpected && !post.hasImage);
+}
+
+/** Text and picture at a glance: present, missing, or not applicable. */
+function ContentIcons({ post, imageExpected }: { post: PostDto; imageExpected: boolean }) {
+  if (post.status === 'idea' || post.status === 'planned') return null;
+
+  const expected = CONTENT_EXPECTED.includes(post.status);
+  const published = post.status === 'published';
+
+  const textOk = published ? true : post.textHtml !== null;
+  const imageOk = published ? true : post.hasImage;
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <Mark
+        ok={textOk}
+        warn={expected && !textOk}
+        title={
+          published
+            ? 'Опубліковано: локальний текст стерто, лишився лінк'
+            : textOk
+              ? 'Текст готовий'
+              : 'Тексту немає'
+        }
+      >
+        <FileText className="size-3.5" />
+      </Mark>
+      {imageExpected && (
+        <Mark
+          ok={imageOk}
+          warn={expected && !imageOk}
+          title={
+            published
+              ? 'Опубліковано: зображення стерто, лишився лінк'
+              : imageOk
+                ? 'Зображення готове'
+                : 'Зображення немає'
+          }
+        >
+          <ImageIcon className="size-3.5" />
+        </Mark>
+      )}
+    </span>
+  );
+}
+
+function Mark({
+  ok,
+  warn,
+  title,
+  children,
+}: {
+  ok: boolean;
+  warn: boolean;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const tone = warn ? 'text-amber-600' : ok ? 'text-slate-400' : 'text-slate-300';
+  return (
+    <span title={title} className={`relative flex items-center ${tone}`}>
+      {children}
+      {!ok && <span className="absolute inset-x-0 top-1/2 h-px rotate-[-20deg] bg-current" />}
+    </span>
+  );
+}
+
 export function PostsCard({ project }: { project: ProjectDto }) {
   const [page, setPage] = useState<PostsPage | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // `?post=<id>` arrives from the queue, where a job names the post it works on.
+  // Opening it is the whole point of following that link, so the id seeds the
+  // expanded row and clears the filters that would have hidden it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedId = searchParams.get('post');
+  const [openId, setOpenId] = useState<string | null>(linkedId);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (!linkedId) return;
+    setOpenId(linkedId);
+    setStatusFilter(null);
+    setQuery('');
+  }, [linkedId]);
 
   // One request: ideas arrive in the same list, as posts with status `idea`.
   const reload = useCallback(async () => {
@@ -94,14 +198,29 @@ export function PostsCard({ project }: { project: ProjectDto }) {
     return () => clearInterval(timer);
   }, [reload]);
 
+  const imageExpected = project.imageMode !== 'none';
+
+  const problems = useMemo(
+    () => (page?.posts ?? []).filter((post) => isProblem(post, imageExpected)),
+    [page, imageExpected],
+  );
+
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return (page?.posts ?? []).filter((post) => {
-      if (statusFilter && post.status !== statusFilter) return false;
+    const base =
+      statusFilter === PROBLEM_FILTER ? problems : (page?.posts ?? []);
+    return base.filter((post) => {
+      // The post someone followed a link to is always in the list, whatever the
+      // filters say — arriving at «під фільтр не потрапив жоден пост» after
+      // clicking a direct link is the opposite of what the link promised.
+      if (post.id === linkedId) return true;
+      if (statusFilter && statusFilter !== PROBLEM_FILTER && post.status !== statusFilter) {
+        return false;
+      }
       if (!needle) return true;
       return (post.topicTitle ?? '').toLowerCase().includes(needle);
     });
-  }, [page, statusFilter, query]);
+  }, [page, problems, statusFilter, query, linkedId]);
 
   return (
     <Card
@@ -128,6 +247,26 @@ export function PostsCard({ project }: { project: ProjectDto }) {
               }`}
             >
               усі {page.posts.length}
+            </button>
+          )}
+          {/* Problems cut across statuses on purpose: a `ready` post with no
+              image is heading for a broken publication, and no status chip
+              would ever have shown it. */}
+          {problems.length > 0 && (
+            <button
+              type="button"
+              title="Пости, які не поїдуть як слід: помилка, пропущений слот, або немає тексту чи зображення там, де вони вже мають бути."
+              onClick={() =>
+                setStatusFilter(statusFilter === PROBLEM_FILTER ? null : PROBLEM_FILTER)
+              }
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                statusFilter === PROBLEM_FILTER
+                  ? 'bg-red-600 text-white'
+                  : 'bg-red-100 text-red-700 hover:bg-red-200'
+              }`}
+            >
+              проблемні
+              <strong>{problems.length}</strong>
             </button>
           )}
           {page &&
@@ -185,7 +324,13 @@ export function PostsCard({ project }: { project: ProjectDto }) {
                 post={post}
                 project={project}
                 expanded={openId === post.id}
-                onToggle={() => setOpenId(openId === post.id ? null : post.id)}
+                onToggle={() => {
+                  const next = openId === post.id ? null : post.id;
+                  setOpenId(next);
+                  // The address should stop pointing at a post the operator has
+                  // closed; otherwise a reload reopens it forever.
+                  if (linkedId && next !== linkedId) setSearchParams({}, { replace: true });
+                }}
                 onChanged={() => void reload()}
               />
             ))}
@@ -222,10 +367,7 @@ function PostRow({
 
   const label = STATUS[post.status] ?? { text: post.status, tone: 'neutral' as const, hint: '' };
   const slot = post.scheduledAt
-    ? formatDateTime(post.scheduledAt, {
-        timezone: project.timezone,
-        withZone: zoneDiffers(project.timezone),
-      })
+    ? formatDateTime(post.scheduledAt, { timezone: project.timezone })
     : 'без слоту';
 
   /** Nothing has been asked of a model yet — the row is only a subject. */
@@ -273,9 +415,19 @@ function PostRow({
           <Badge tone={label.tone}>{label.text}</Badge>
         </span>
         <span className="font-mono text-xs text-slate-500">{slot}</span>
-        <span className="min-w-0 flex-1 truncate text-sm">
-          {post.topicTitle ?? <span className="text-slate-400">тему ще не обрано</span>}
+        {/*
+          Wrapped, not truncated. A subject is the only thing that says what the
+          post *is*, and the row cut it off at the width of the column with no
+          way to see the rest — including in the expanded view, where there was
+          room for it all along.
+        */}
+        <span className="min-w-0 flex-1 text-sm">
+          {post.topicTitle ?? (
+            <span className="text-slate-400">тему візьме з банку перед генерацією</span>
+          )}
         </span>
+
+        <ContentIcons post={post} imageExpected={project.imageMode !== 'none'} />
         {post.permalink && (
           <a
             href={post.permalink}

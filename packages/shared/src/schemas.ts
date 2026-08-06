@@ -14,6 +14,7 @@ import {
   SCHEDULE_MODES,
   POST_SOURCES,
   KEY_TIERS,
+  BATCH_MODES,
   TELEGRAM_CAPTION_LIMIT,
 } from './enums.js';
 
@@ -116,6 +117,9 @@ const projectFields = {
    */
   postMaxChars: z.number().int().min(200).max(4096),
 
+  /** How much of the buffered work may go to the half-price batch tier. */
+  batchMode: z.enum(BATCH_MODES),
+
   /** One switch for the journal; off by default (prompts and output are bulky). */
   logEnabled: z.boolean(),
   logRetentionDays: z.number().int().min(1).max(365),
@@ -141,6 +145,7 @@ export const projectInputSchema = z.object({
   leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
   missPolicy: projectFields.missPolicy.default('publish_late'),
   postMaxChars: projectFields.postMaxChars.default(TELEGRAM_CAPTION_LIMIT),
+  batchMode: projectFields.batchMode.default('partial'),
   logEnabled: projectFields.logEnabled.default(false),
   logRetentionDays: projectFields.logRetentionDays.default(7),
   schedule: projectFields.schedule.default(defaultSchedule),
@@ -194,6 +199,7 @@ export const projectDtoSchema = z.object({
   leadTimeMinutes: z.number().int(),
   missPolicy: z.enum(MISS_POLICIES),
   postMaxChars: z.number().int(),
+  batchMode: z.enum(BATCH_MODES),
   logEnabled: z.boolean(),
   logRetentionDays: z.number().int(),
   schedule: scheduleSchema,
@@ -344,6 +350,8 @@ export const actionConfigSchema = z.object({
   /** Which level actually supplies the key, for showing it without guessing. */
   keyLevel: z.enum(KEY_LEVELS),
   keyLabel: z.string().nullable(),
+  /** The key that will actually pay, so the UI can name it and show its plan. */
+  keyId: z.string().uuid().nullable(),
   chainInherited: z.boolean(),
   prompt: z.object({
     body: z.string(),

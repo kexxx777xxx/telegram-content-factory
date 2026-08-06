@@ -1,6 +1,7 @@
 import type { ProjectDto } from '@tcf/shared';
-import { Loader2, PlayCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { ExternalLink, HelpCircle, Loader2, PlayCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { formatDateTime } from '../lib/time';
 import { api, type JobDto, type JobsPage, type PurgeableStatus } from '../api/client';
 import { Badge, Button, Card, Notice, Select } from './ui';
@@ -212,6 +213,41 @@ export function QueueCard({ projectId }: { projectId?: string }) {
   );
 }
 
+/**
+ * What the job is *about*, and a way to go look at it.
+ *
+ * Without this a queue of `publish_post` rows is a list of identical strings:
+ * the only useful question — which post, and is it still there — could not be
+ * answered from this screen at all. A job pointing at a deleted post says so
+ * outright, because that one has no fix other than deletion.
+ */
+function JobSubject({ job }: { job: JobDto }) {
+  if (!job.postId) return null;
+
+  if (!job.postExists) {
+    return (
+      <span
+        className="mt-1 flex items-center gap-1 text-slate-400"
+        title={`Пост ${job.postId} видалено`}
+      >
+        <HelpCircle className="size-3.5" />
+        пост уже видалено — джобі нема що робити
+      </span>
+    );
+  }
+
+  return (
+    <Link
+      to={`/projects/${job.projectId ?? ''}/posts?post=${job.postId}`}
+      className="mt-1 flex min-w-0 items-start gap-1 text-slate-600 hover:text-slate-900 hover:underline"
+      title="Відкрити пост"
+    >
+      <ExternalLink className="mt-0.5 size-3.5 shrink-0" />
+      <span className="line-clamp-2">{job.postTopic ?? 'пост без теми'}</span>
+    </Link>
+  );
+}
+
 function JobRow({ job, onChanged }: { job: JobDto; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
 
@@ -268,6 +304,10 @@ function JobRow({ job, onChanged }: { job: JobDto; onChanged: () => void }) {
           )}
         </span>
       </div>
+
+      {/* Its own line: a subject long enough to wrap used to push the buttons
+          onto a second row and leave the list ragged. */}
+      <JobSubject job={job} />
 
       {/* Three timestamps, because they answer different questions: when it
           appeared, when something last happened to it, and when it may run. */}

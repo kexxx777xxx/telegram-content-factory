@@ -84,6 +84,13 @@
 
 Зміна `telegramChannelId` скидає закешований `telegramChannelUsername`: він належав старому каналу.
 
+### `POST /api/projects/:id/fill-buffer`
+
+Планує відсутні слоти цього проєкту негайно, не чекаючи тіку планувальника. Повертає
+`{ projects, postsPlanned, jobsEnqueued, skipped }`. Статус проєкту не перевіряється: натиснута
+кнопка — це і є запит наперед, а пости все одно чекають у буфері. Advisory-лока немає — від
+подвійного слоту тримає `posts_slot_uniq`.
+
 ### `POST /api/projects/:id/verify-telegram`
 
 Пробує канал ботом проєкту: `getMe` → `getChat` → `getChatMember`. Повертає `telegramCheckSchema`:
@@ -247,6 +254,10 @@ DTO містить `usageToday` і `blockedModels` — тиск на бюдже�
 Кожен рядок несе `projectName` (з джойна; `null` для джоб без проєкту — `prune`, `backup`),
 `createdAt` і `updatedAt` — без них у черзі з тисячами мертвих джоб не видно ні чиї вони, ні коли
 зʼявились.
+
+Для джоб, що працюють над постом, додаються `postId`, `postTopic`, `postStatus` і `postExists`
+(одним запитом на сторінку, не по рядку). `postExists: false` означає, що пост уже видалено —
+відповідь на «що з нею робити» тут одна, і це видалення.
 
 ### `POST /api/jobs/:id/retry`
 

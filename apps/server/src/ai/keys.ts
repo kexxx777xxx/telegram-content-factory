@@ -104,9 +104,11 @@ function toResolved(row: typeof apiKeys.$inferSelect, level: KeyLevel): Resolved
 export async function describeKey(
   projectId: string | null,
   action: AiAction,
-): Promise<{ level: KeyLevel; label: string | null }> {
+): Promise<{ level: KeyLevel; label: string | null; id: string | null }> {
   const key = await resolveKey(projectId, 'gemini', action);
-  return key ? { level: key.level, label: key.label } : { level: 'default', label: null };
+  return key
+    ? { level: key.level, label: key.label, id: key.id }
+    : { level: 'default', label: null, id: null };
 }
 
 export async function hasAnyKey(provider: AiProvider = 'gemini'): Promise<boolean> {

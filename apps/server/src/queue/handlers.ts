@@ -19,15 +19,20 @@ async function handleReplenishTopics({ job, log }: JobContext): Promise<void> {
     // The scheduled refill is the one place batching is unambiguously right:
     // nothing waits on it, and the threshold is a minimum, so the bank still
     // has topics while the vendor takes its hours.
-    const report = await replenishIdeas(project.id, count, project.persona, project.language, {
-      allowBatch: true,
-    });
+    const report = await replenishIdeas(project, count, { allowBatch: true });
 
     if (report === 'batched') {
       throw new RescheduleJob(
         new Date(Date.now() + BATCH_POLL_MS),
         'Теми замовлені через batch, чекаємо на відповідь',
       );
+    }
+
+    if (report === 'blocked') {
+      // The project asked for batch and nothing else; the bank waits rather
+      // than being refilled at full price behind the operator's back.
+      log.warn('batch-only project could not queue a topic batch, refill skipped');
+      return;
     }
 
     log.info({ inserted: report.inserted, duplicates: report.duplicates }, 'replenish finished');

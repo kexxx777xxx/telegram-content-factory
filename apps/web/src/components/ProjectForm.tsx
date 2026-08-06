@@ -7,10 +7,11 @@ import {
   type ProjectUpdate,
   type Schedule,
 } from '@tcf/shared';
+import { Loader2, PlayCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { ScheduleEditor } from './ScheduleEditor';
-import { Card, Field, Input, keyName, Notice, Select, Textarea, VarTag } from './ui';
+import { Button, Card, Field, Input, keyName, Notice, Select, Textarea, VarTag } from './ui';
 
 export interface ProjectFormValue {
   name: string;
@@ -32,6 +33,7 @@ export interface ProjectFormValue {
   leadTimeMinutes: number;
   missPolicy: ProjectInput['missPolicy'];
   postMaxChars: number;
+  batchMode: ProjectInput['batchMode'];
   logEnabled: boolean;
   logRetentionDays: number;
   schedule: Schedule;
@@ -58,6 +60,7 @@ export function emptyForm(): ProjectFormValue {
     leadTimeMinutes: 180,
     missPolicy: 'publish_late',
     postMaxChars: TELEGRAM_CAPTION_LIMIT,
+    batchMode: 'partial',
     logEnabled: false,
     logRetentionDays: 7,
     schedule: { mode: 'slots', slots: ['09:00', '18:00'], weekdays: [] },
@@ -86,6 +89,7 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     leadTimeMinutes: project.leadTimeMinutes,
     missPolicy: project.missPolicy,
     postMaxChars: project.postMaxChars,
+    batchMode: project.batchMode,
     logEnabled: project.logEnabled,
     logRetentionDays: project.logRetentionDays,
     schedule: project.schedule,
@@ -135,6 +139,7 @@ function common(form: ProjectFormValue) {
     leadTimeMinutes: form.leadTimeMinutes,
     missPolicy: form.missPolicy,
     postMaxChars: form.postMaxChars,
+    batchMode: form.batchMode,
     logEnabled: form.logEnabled,
     logRetentionDays: form.logRetentionDays,
     schedule: sortSchedule(form.schedule),
@@ -204,12 +209,15 @@ export function ProjectForm({
   onChange,
   mode,
   section = 'all',
+  onFillBuffer,
 }: {
   value: ProjectFormValue;
   onChange: (next: ProjectFormValue) => void;
   mode: 'create' | 'edit';
   /** Which cards to render; the project page shows one group per tab. */
   section?: ProjectFormSection;
+  /** Present only for a saved project: planning needs an id. */
+  onFillBuffer?: () => Promise<{ postsPlanned: number; jobsEnqueued: number }>;
 }) {
   const [slugTouched, setSlugTouched] = useState(mode === 'edit');
   const [keys, setKeys] = useState<ApiKeyDto[]>([]);
@@ -515,13 +523,42 @@ export function ProjectForm({
               />
             </Field>
 
-            <Field label="Якщо пост не встиг">
+            <Field label="Якщо пост не встиг" hint="Стосується слота, який настав, а пост ще не готовий.">
               <Select
                 value={value.missPolicy}
                 onChange={(e) => set('missPolicy', e.target.value as never)}
               >
                 <option value="publish_late">Опублікувати із запізненням</option>
                 <option value="skip">Пропустити слот</option>
+              </Select>
+            </Field>
+
+            <Field
+              label="Використання batch"
+              hint={
+                <>
+                  Batch — половина ціни, відповідь до 24 годин. Саме заради нього й існує буфер:
+                  робота, яка може почекати добу, коштує вдвічі менше.
+                  <span className="mt-1 block">
+                    <b>Частковий</b> — батчиться те, за що платить ключ із увімкненим batch, решта
+                    йде звичайним шляхом. <b>Лише batch</b> — слот, який не вдалося замовити
+                    дешево, лишається порожнім замість генерації за повною ціною.{' '}
+                    <b>Вимкнено</b> — усе синхронно.
+                  </span>
+                  <span className="mt-1 block">
+                    Ручний запуск і слот, до якого лишились години, завжди йдуть звичайним шляхом:
+                    чекати добу вже нікуди.
+                  </span>
+                </>
+              }
+            >
+              <Select
+                value={value.batchMode}
+                onChange={(e) => set('batchMode', e.target.value as never)}
+              >
+                <option value="partial">Частковий — де дозволяє ключ</option>
+                <option value="batch_only">Лише batch — не генерувати за повною ціною</option>
+                <option value="off">Вимкнено — усе синхронно</option>
               </Select>
             </Field>
           </div>
@@ -548,16 +585,28 @@ export function ProjectForm({
             exist, and nothing on this card said so: the field accepted the
             number and the project generated everything synchronously.
           */}
-          {value.postsBuffer > 0 && payingKey && !(payingKey.tier === 'paid' && payingKey.batchEnabled) && (
-            <Notice>
-              <strong>Буфер працює, але без економії.</strong> Ключ «{payingKey.label}»{' '}
-              {payingKey.tier === 'paid'
-                ? 'платний, але batch на ньому не ввімкнено'
-                : 'безкоштовний, а batch доступний лише на платному плані'}
-              , тож теми й тексти генеруються синхронно за повною ціною. Batch (−50%, відповідь до
-              24 год) вмикається в Налаштуваннях → API-ключі.
-            </Notice>
-          )}
+          {value.postsBuffer > 0 &&
+            value.batchMode !== 'off' &&
+            payingKey &&
+            !(payingKey.tier === 'paid' && payingKey.batchEnabled) && (
+              <Notice tone={value.batchMode === 'batch_only' ? 'red' : 'amber'}>
+                <strong>
+                  {value.batchMode === 'batch_only'
+                    ? 'Режим «лише batch», а batch недоступний.'
+                    : 'Буфер працює, але без економії.'}
+                </strong>{' '}
+                Ключ «{payingKey.label}»{' '}
+                {payingKey.tier === 'paid'
+                  ? 'платний, але batch на ньому не ввімкнено'
+                  : 'безкоштовний, а batch доступний лише на платному плані'}
+                {value.batchMode === 'batch_only'
+                  ? ' — пости наперед не готуватимуться взагалі. Увімкніть batch на ключі або перемкніть режим.'
+                  : ', тож теми й тексти генеруються синхронно за повною ціною.'}{' '}
+                Batch вмикається в Налаштуваннях → API-ключі.
+              </Notice>
+            )}
+
+          {onFillBuffer && value.postsBuffer > 0 && <FillBufferButton onFill={onFillBuffer} />}
         </div>
       </Card>
       )}
@@ -606,6 +655,49 @@ export function ProjectForm({
           </Notice>
         </div>
       </Card>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Plans the missing slots on the spot instead of waiting for the next tick.
+ *
+ * The tick is a minute away at worst, but that is not what this button is for:
+ * after raising the buffer — or after the app was down for a day — the operator
+ * wants to see the queue fill up while they are still looking at it, and to
+ * know how much was actually planned.
+ */
+function FillBufferButton({
+  onFill,
+}: {
+  onFill: () => Promise<{ postsPlanned: number; jobsEnqueued: number }>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ postsPlanned: number; jobsEnqueued: number } | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await onFill());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button variant="secondary" disabled={busy} onClick={() => void run()}>
+        {busy ? <Loader2 className="size-4 animate-spin" /> : <PlayCircle className="size-4" />}
+        Наповнити буфер зараз
+      </Button>
+      {result && (
+        <span className="text-sm text-slate-500">
+          {result.postsPlanned === 0
+            ? 'Буфер уже повний — нових слотів не зʼявилось.'
+            : `Заплановано слотів: ${result.postsPlanned}, поставлено джоб: ${result.jobsEnqueued}.`}
+        </span>
       )}
     </div>
   );

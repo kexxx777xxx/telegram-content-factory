@@ -15,6 +15,21 @@ export type ImageMode = (typeof IMAGE_MODES)[number];
 export const PUBLISH_MODES = ['auto', 'approval'] as const;
 export type PublishMode = (typeof PUBLISH_MODES)[number];
 
+/**
+ * How much of the work may go to the vendor's half-price batch tier.
+ *
+ * `partial` is the historical behaviour: an action batches when the key paying
+ * for it allows batch. `batch_only` says the buffer exists *for* the discount —
+ * work that could have been batched but cannot be is left undone rather than
+ * generated at full price. `off` keeps everything synchronous.
+ *
+ * None of them touch a post that is already due: with no slack left there is
+ * nothing to wait 24 hours with, so manual runs and just-in-time slots always
+ * take the normal pipeline whatever the mode says.
+ */
+export const BATCH_MODES = ['partial', 'batch_only', 'off'] as const;
+export type BatchMode = (typeof BATCH_MODES)[number];
+
 /** What to do when a slot arrives and the post is not ready. */
 export const MISS_POLICIES = ['publish_late', 'skip'] as const;
 export type MissPolicy = (typeof MISS_POLICIES)[number];

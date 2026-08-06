@@ -7,6 +7,7 @@ import type {
   KeyLevel,
   ModelInfo,
 } from '@tcf/shared';
+import { promptVariables } from '@tcf/shared';
 import {
   ArrowDown,
   ArrowUp,
@@ -20,7 +21,6 @@ import {
   X,
 } from 'lucide-react';
 import { Fragment, useEffect, useState } from 'react';
-import { PROMPT_VARIABLES } from '@tcf/shared';
 import { api } from '../api/client';
 import {
   Badge,
@@ -37,14 +37,63 @@ import {
   VarTag,
 } from './ui';
 
-const ACTION_LABELS: Record<AiAction, { title: string; hint: string }> = {
-  topics: { title: 'Теми', hint: 'Поповнення банку тем' },
-  post_text: { title: 'Текст поста', hint: 'Основний текст публікації' },
-  svg: { title: 'SVG-схема', hint: 'Ілюстрація, коли режим — SVG' },
-  svg_repair: { title: 'Ремонт SVG', hint: 'Виклик, коли санітайзер відхилив схему' },
-  image_prompt: { title: 'Промпт для зображення', hint: 'Коли режим — image-модель' },
-  image: { title: 'Малювання зображення', hint: 'Модель, що малює за промптом вище' },
-};
+/**
+ * The pipeline as an operator thinks of it, not as the code enumerates it.
+ *
+ * `svg` and `svg_repair` are one job — draw the schematic, and fix it when the
+ * sanitiser refuses — and so are `image_prompt` and `image`: describe the
+ * picture, then draw the description. Listed as four separate rows they invited
+ * the reader to configure each half independently, which is never what anyone
+ * wants and is how a chain ends up half-migrated to a different model.
+ */
+interface ActionGroup {
+  key: string;
+  title: string;
+  hint: string;
+  /** First one is the group's main action; the rest are its follow-ups. */
+  actions: { action: AiAction; label: string; note?: string }[];
+}
+
+const GROUPS: ActionGroup[] = [
+  {
+    key: 'topics',
+    title: 'Теми',
+    hint: 'Поповнення банку тем',
+    actions: [{ action: 'topics', label: 'Генерація тем' }],
+  },
+  {
+    key: 'post_text',
+    title: 'Текст поста',
+    hint: 'Основний текст публікації',
+    actions: [{ action: 'post_text', label: 'Текст поста' }],
+  },
+  {
+    key: 'svg',
+    title: 'SVG-схема',
+    hint: 'Ілюстрація, коли режим — SVG',
+    actions: [
+      { action: 'svg', label: 'Малювання схеми' },
+      {
+        action: 'svg_repair',
+        label: 'Ремонт схеми',
+        note: 'Викликається лише тоді, коли санітайзер відхилив результат вище: моделі повертається її ж SVG разом із причиною відмови.',
+      },
+    ],
+  },
+  {
+    key: 'image',
+    title: 'Зображення',
+    hint: 'Ілюстрація, коли режим — image-модель',
+    actions: [
+      { action: 'image_prompt', label: 'Промпт для зображення' },
+      {
+        action: 'image',
+        label: 'Малювання зображення',
+        note: 'Малює за промптом, складеним вище. Власного промпта не має — у модель іде рівно той текст, тож тут налаштовуються лише модель і ключ.',
+      },
+    ],
+  },
+];
 
 const KEY_LEVEL_LABELS: Record<KeyLevel, string> = {
   action: 'закріплений саме за цією дією',
@@ -52,32 +101,8 @@ const KEY_LEVEL_LABELS: Record<KeyLevel, string> = {
   default: 'дефолтний ключ із налаштувань',
 };
 
-/**
- * The reference an operator needs while editing a prompt: every placeholder the
- * action understands, what lands in it, and which setting supplies it.
- *
- * It sits under the prompt box rather than in a hint, because it is read *while*
- * typing — a tooltip that closes on the first keystroke would be useless here.
- */
-function VariableReference({ action }: { action: AiAction }) {
-  return (
-    <Spoiler label="Довідник змінних">
-      <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-[9rem_1fr]">
-        {PROMPT_VARIABLES[action].map((variable) => (
-          <Fragment key={variable.name}>
-            <dt>
-              <VarTag name={variable.name} />
-            </dt>
-            <dd className="text-slate-600">
-              {variable.meaning}
-              <span className="block text-slate-400">{variable.source}</span>
-            </dd>
-          </Fragment>
-        ))}
-      </dl>
-    </Spoiler>
-  );
-}
+/** The drawing model gets the text produced by `image_prompt`, not a template. */
+const PROMPTLESS: AiAction[] = ['image'];
 
 /**
  * One editor for both scopes. With `projectId` it edits a project override and
@@ -91,7 +116,7 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [keys, setKeys] = useState<ApiKeyDto[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [open, setOpen] = useState<AiAction | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
 
   useEffect(() => {
     void api.getGenerationConfig(projectId).then(setConfigs);
@@ -126,25 +151,34 @@ export function GenerationConfig({ projectId }: { projectId?: string }) {
       <div className="space-y-3">
         {modelsError && <Notice>Каталог моделей недоступний: {modelsError}</Notice>}
 
-        {configs.map((config) => (
-          <ActionRow
-            key={config.action}
-            config={config}
-            models={models}
-            keys={keys}
-            projectId={projectId}
-            expanded={open === config.action}
-            onToggle={() => setOpen(open === config.action ? null : config.action)}
-            onSaved={setConfigs}
-          />
-        ))}
+        {GROUPS.map((group) => {
+          const groupConfigs = group.actions
+            .map((a) => configs.find((c) => c.action === a.action))
+            .filter((c): c is ActionConfig => c !== undefined);
+          if (groupConfigs.length === 0) return null;
+
+          return (
+            <GroupRow
+              key={group.key}
+              group={group}
+              configs={groupConfigs}
+              models={models}
+              keys={keys}
+              projectId={projectId}
+              expanded={open === group.key}
+              onToggle={() => setOpen(open === group.key ? null : group.key)}
+              onSaved={setConfigs}
+            />
+          );
+        })}
       </div>
     </Card>
   );
 }
 
-function ActionRow({
-  config,
+function GroupRow({
+  group,
+  configs,
   models,
   keys,
   projectId,
@@ -152,12 +186,125 @@ function ActionRow({
   onToggle,
   onSaved,
 }: {
-  config: ActionConfig;
+  group: ActionGroup;
+  configs: ActionConfig[];
   models: ModelInfo[];
   keys: ApiKeyDto[];
   projectId?: string;
   expanded: boolean;
   onToggle: () => void;
+  onSaved: (next: ActionConfig[]) => void;
+}) {
+  const main = configs[0]!;
+  const overridden =
+    projectId !== undefined &&
+    configs.some((c) => !c.chainInherited || !c.promptInherited || c.apiKeyId !== null);
+
+  return (
+    <div className="rounded-lg border border-slate-200">
+      {/*
+        The collapsed row answers the two questions asked from across the screen:
+        which model does this, and who pays. The rest of the chain is a fallback
+        list — it matters when something breaks, not while reading.
+      */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-left hover:bg-slate-50"
+      >
+        {expanded ? (
+          <ChevronDown className="size-4 shrink-0 text-slate-400" />
+        ) : (
+          <ChevronRight className="size-4 shrink-0 text-slate-400" />
+        )}
+        <span className="font-medium">{group.title}</span>
+        <span className="text-xs text-slate-500">{group.hint}</span>
+
+        <span className="ml-auto flex flex-wrap items-center gap-2">
+          {projectId &&
+            (overridden ? (
+              <Badge tone="amber">Перевизначено</Badge>
+            ) : (
+              <Badge>Успадковано з глобальних</Badge>
+            ))}
+          <span className="font-mono text-xs text-slate-500">
+            {main.steps[0]?.model ?? 'модель не вибрано'}
+          </span>
+          {main.steps.length > 1 && (
+            <span className="text-xs text-slate-400">+{main.steps.length - 1} резервних</span>
+          )}
+          <KeyChip keyId={main.keyId} label={main.keyLabel} keys={keys} />
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-6 border-t border-slate-200 px-4 py-4">
+          {configs.map((config, index) => {
+            const meta = group.actions[index]!;
+            return (
+              <ActionEditor
+                key={config.action}
+                config={config}
+                label={configs.length > 1 ? meta.label : null}
+                note={meta.note}
+                models={models}
+                keys={keys}
+                projectId={projectId}
+                onSaved={onSaved}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The key by name, with what its plan allows.
+ *
+ * «Дефолтний ключ» told an operator which *rule* picked the key, never which
+ * key that was — so whether this action can batch, the thing the rule exists to
+ * decide, stayed invisible.
+ */
+function KeyChip({
+  keyId,
+  label,
+  keys,
+}: {
+  keyId: string | null;
+  label: string | null;
+  keys: ApiKeyDto[];
+}) {
+  const key = keys.find((k) => k.id === keyId);
+  if (!key) return <span className="text-xs text-slate-400">{label ?? 'ключа немає'}</span>;
+
+  return (
+    <span className="flex items-center gap-1 text-xs text-slate-600">
+      {key.label}
+      <Badge tone={key.tier === 'paid' ? 'amber' : 'neutral'}>{key.tier}</Badge>
+      {key.batchEnabled && <Badge tone="amber">batch</Badge>}
+      {!key.enabled && <Badge tone="red">вимкнено</Badge>}
+    </span>
+  );
+}
+
+function ActionEditor({
+  config,
+  label,
+  note,
+  models,
+  keys,
+  projectId,
+  onSaved,
+}: {
+  config: ActionConfig;
+  /** Set only inside a group with more than one action. */
+  label: string | null;
+  note?: string;
+  models: ModelInfo[];
+  keys: ApiKeyDto[];
+  projectId?: string;
   onSaved: (next: ActionConfig[]) => void;
 }) {
   const [steps, setSteps] = useState<ChainStepInput[]>(config.steps);
@@ -174,9 +321,9 @@ function ActionRow({
     setApiKeyId(config.apiKeyId);
   }, [config]);
 
-  const label = ACTION_LABELS[config.action];
+  const hasPrompt = !PROMPTLESS.includes(config.action);
   const dirty =
-    promptBody !== config.prompt.body ||
+    (hasPrompt && promptBody !== config.prompt.body) ||
     apiKeyId !== config.apiKeyId ||
     JSON.stringify(steps) !== JSON.stringify(config.steps);
 
@@ -185,7 +332,11 @@ function ActionRow({
     setSaved(false);
     try {
       onSaved(
-        await api.saveGenerationConfig(config.action, projectId, { steps, promptBody, apiKeyId }),
+        await api.saveGenerationConfig(config.action, projectId, {
+          steps,
+          apiKeyId,
+          ...(hasPrompt ? { promptBody } : {}),
+        }),
       );
       setSaved(true);
     } finally {
@@ -197,7 +348,9 @@ function ActionRow({
     if (!projectId) return;
     setSaving(true);
     try {
-      onSaved(await api.clearGenerationOverride(config.action, projectId, { chain: true, prompt: true }));
+      onSaved(
+        await api.clearGenerationOverride(config.action, projectId, { chain: true, prompt: true }),
+      );
     } finally {
       setSaving(false);
     }
@@ -208,9 +361,7 @@ function ActionRow({
     setRunning(true);
     setDry(null);
     try {
-      setDry(
-        await api.dryRun(projectId, { action: config.action, variables: {} }),
-      );
+      setDry(await api.dryRun(projectId, { action: config.action, variables: {} }));
     } catch (err) {
       setDry({
         ok: false,
@@ -232,191 +383,234 @@ function ActionRow({
     projectId && (!config.chainInherited || !config.promptInherited || config.apiKeyId !== null);
 
   return (
-    <div className="rounded-lg border border-slate-200">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
-      >
-        {expanded ? (
-          <ChevronDown className="size-4 text-slate-400" />
-        ) : (
-          <ChevronRight className="size-4 text-slate-400" />
-        )}
-        <span className="font-medium">{label.title}</span>
-        <span className="text-xs text-slate-500">{label.hint}</span>
-        <span className="ml-auto flex items-center gap-2">
-          {projectId &&
-            (overridden ? (
-              <Badge tone="amber">Перевизначено</Badge>
-            ) : (
-              <Badge>Успадковано з глобальних</Badge>
-            ))}
-          <span className="text-xs text-slate-400">
-            {config.steps.length} {config.steps.length === 1 ? 'модель' : 'моделі'}
-          </span>
-        </span>
-      </button>
+    <div className="space-y-4">
+      {label && (
+        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
+          <span className="text-sm font-semibold text-slate-800">{label}</span>
+          {note && <InfoHint>{note}</InfoHint>}
+        </div>
+      )}
 
-      {expanded && (
-        <div className="space-y-5 border-t border-slate-200 px-4 py-4">
-          <div>
-            <div className="mb-2 flex items-center gap-1.5">
-              <span className="text-sm font-medium text-slate-700">Ланцюжок моделей</span>
-              <InfoHint>
-                Моделі пробуються згори вниз. Крок, заблокований після 429 або недоступний,
-                пропускається миттєво — наступний отримує той самий промпт. Число праворуч від
-                моделі — температура.
-              </InfoHint>
-            </div>
-            <div className="space-y-2">
-              {steps.map((step, index) => (
-                <StepRow
-                  key={index}
-                  step={step}
-                  index={index}
-                  total={steps.length}
-                  models={models}
-                  action={config.action}
-                  onChange={(next) => setSteps(steps.map((s, i) => (i === index ? next : s)))}
-                  onMove={(delta) => {
-                    const target = index + delta;
-                    if (target < 0 || target >= steps.length) return;
-                    const next = [...steps];
-                    const [moved] = next.splice(index, 1);
-                    if (moved) next.splice(target, 0, moved);
-                    setSteps(next);
-                  }}
-                  onRemove={() => setSteps(steps.filter((_, i) => i !== index))}
-                />
+      <ChainEditor
+        steps={steps}
+        models={models}
+        action={config.action}
+        onChange={setSteps}
+      />
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field
+          label="Яким ключем платимо"
+          hint={
+            apiKeyId === null
+              ? KEY_LEVEL_LABELS[config.keyLevel]
+              : 'Закріплено за цим ключем: він не зміниться, навіть якщо дефолтним у налаштуваннях стане інший.'
+          }
+        >
+          <Select value={apiKeyId ?? ''} onChange={(e) => setApiKeyId(e.target.value || null)}>
+            <option value="">
+              {projectId
+                ? 'Як у проєкті (а якщо там не вибрано — дефолтний)'
+                : 'Дефолтний (який позначено в налаштуваннях)'}
+            </option>
+            {keys
+              .filter((k) => k.enabled)
+              .map((k) => (
+                <option key={k.id} value={k.id}>
+                  {keyName(k)}
+                </option>
               ))}
-              <button
-                type="button"
-                onClick={() =>
-                  setSteps([
-                    ...steps,
-                    {
-                      provider: 'gemini',
-                      model: modelsForAction(models, config.action)[0]?.id ?? '',
-                      params: {},
-                      promptId: null,
-                    },
-                  ])
-                }
-                className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
-              >
-                <Plus className="size-4" />
-                Додати фолбек
-              </button>
-            </div>
-          </div>
+          </Select>
+        </Field>
 
+        <div className="self-end pb-2 text-sm">
+          <span className="text-slate-500">Зараз платить: </span>
+          <KeyChip keyId={config.keyId} label={config.keyLabel} keys={keys} />
+        </div>
+      </div>
+
+      {hasPrompt ? (
+        <div className="space-y-2">
           <Field
-            label="Яким ключем платимо"
+            label="Промпт"
             hint={
-              apiKeyId === null ? (
-                <>
-                  Зараз спрацює <b>{config.keyLabel ?? 'жоден'}</b> —{' '}
-                  {KEY_LEVEL_LABELS[config.keyLevel]}.
-                </>
-              ) : (
-                'Закріплено за цим номером: він не зміниться, навіть якщо дефолтним у налаштуваннях стане інший ключ.'
-              )
+              <>
+                Зберігається новою версією, стара лишається: опублікований пост посилається на ту
+                версію, що його породила. Поточна: {config.prompt.scope} v{config.prompt.version}.
+              </>
             }
           >
-            <Select
-              value={apiKeyId ?? ''}
-              onChange={(e) => setApiKeyId(e.target.value || null)}
-            >
-              <option value="">
-                {projectId
-                  ? 'Як у проєкті (а якщо там не вибрано — дефолтний)'
-                  : 'Дефолтний (який позначено в налаштуваннях)'}
-              </option>
-              {keys
-                .filter((k) => k.enabled)
-                .map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {keyName(k)}
-                  </option>
-                ))}
-            </Select>
+            <Textarea
+              rows={10}
+              value={promptBody}
+              className="font-mono text-xs"
+              onChange={(e) => setPromptBody(e.target.value)}
+            />
           </Field>
+          <VariableReference action={config.action} />
+        </div>
+      ) : (
+        <p className="text-xs text-slate-500">{note}</p>
+      )}
 
-          <div className="space-y-2">
-            <Field
-              label="Промпт"
-              hint={
-                <>
-                  Зберігається новою версією, стара лишається: опублікований пост посилається на
-                  ту версію, що його породила. Поточна: {config.prompt.scope} v
-                  {config.prompt.version}.
-                </>
-              }
-            >
-              <Textarea
-                rows={10}
-                value={promptBody}
-                className="font-mono text-xs"
-                onChange={(e) => setPromptBody(e.target.value)}
-              />
-            </Field>
-            <VariableReference action={config.action} />
-          </div>
-
-          {/*
-            One row of actions, with the test run on the right where the
-            secondary actions live. It used to sit in a box of its own under a
-            paragraph explaining itself — three lines of prose to introduce one
-            button, on a screen already dense with settings. The explanation is
-            the same, it is just not permanently on screen.
-          */}
-          <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={() => void save()} disabled={saving || !dirty}>
-              {saving && <Loader2 className="size-4 animate-spin" />}
-              Зберегти
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={() => void save()} disabled={saving || !dirty}>
+          {saving && <Loader2 className="size-4 animate-spin" />}
+          Зберегти
+        </Button>
+        {saved && !dirty && (
+          <span className="flex items-center gap-1.5 text-sm text-emerald-600">
+            <Check className="size-4" />
+            Збережено{hasPrompt ? ' як нову версію' : ''}
+          </span>
+        )}
+        <span className="ml-auto flex items-center gap-2">
+          {overridden && (
+            <Button variant="secondary" onClick={() => void revert()} disabled={saving}>
+              <RotateCcw className="size-4" />
+              Повернути до глобальних
             </Button>
-            {saved && !dirty && (
-              <span className="flex items-center gap-1.5 text-sm text-emerald-600">
-                <Check className="size-4" />
-                Збережено як нову версію
-              </span>
-            )}
-            <span className="ml-auto flex items-center gap-2">
-              {overridden && (
-                <Button variant="secondary" onClick={() => void revert()} disabled={saving}>
-                  <RotateCcw className="size-4" />
-                  Повернути до глобальних
-                </Button>
-              )}
-              {projectId && (
-                <>
-                  <Button variant="secondary" onClick={() => void runDry()} disabled={running}>
-                    {running ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Play className="size-4" />
-                    )}
-                    Тестовий запуск
-                  </Button>
-                  <InfoHint>
-                    Справжній виклик за налаштуваннями вище: промпт іде в першу модель, а якщо та
-                    зайнята чи впала — у наступну. Нічого не зберігається й нікуди не публікується,
-                    але виклик платний.
-                  </InfoHint>
-                </>
-              )}
-            </span>
-          </div>
-
-          {dry && (
-            <div className="rounded-lg bg-slate-50 p-4">
-              <DryRunPanel result={dry} />
-            </div>
           )}
+          {projectId && (
+            <>
+              <Button variant="secondary" onClick={() => void runDry()} disabled={running}>
+                {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                Тестовий запуск
+              </Button>
+              <InfoHint>
+                Справжній виклик за налаштуваннями вище: промпт іде в першу модель, а якщо та
+                зайнята чи впала — у наступну. Нічого не зберігається й нікуди не публікується, але
+                виклик платний.
+              </InfoHint>
+            </>
+          )}
+        </span>
+      </div>
+
+      {dry && (
+        <div className="rounded-lg bg-slate-50 p-4">
+          <DryRunPanel result={dry} />
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The first model, always visible; the fallbacks folded away.
+ *
+ * A chain is read top-down exactly once — when something is wrong. The rest of
+ * the time only the first line is true in practice, and five dropdowns stacked
+ * on top of each other made every action look equally complicated.
+ */
+function ChainEditor({
+  steps,
+  models,
+  action,
+  onChange,
+}: {
+  steps: ChainStepInput[];
+  models: ModelInfo[];
+  action: AiAction;
+  onChange: (next: ChainStepInput[]) => void;
+}) {
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= steps.length) return;
+    const next = [...steps];
+    const [moved] = next.splice(index, 1);
+    if (moved) next.splice(target, 0, moved);
+    onChange(next);
+  };
+
+  const rowProps = (index: number) => ({
+    step: steps[index]!,
+    index,
+    total: steps.length,
+    models,
+    action,
+    onChange: (next: ChainStepInput) => onChange(steps.map((s, i) => (i === index ? next : s))),
+    onMove: (delta: number) => move(index, delta),
+    onRemove: () => onChange(steps.filter((_, i) => i !== index)),
+  });
+
+  const addStep = () =>
+    onChange([
+      ...steps,
+      {
+        provider: 'gemini',
+        model: modelsForAction(models, action)[0]?.id ?? '',
+        params: {},
+        promptId: null,
+      },
+    ]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm font-medium text-slate-700">Основна модель</span>
+        <InfoHint>
+          Моделі пробуються згори вниз. Крок, заблокований після 429 або недоступний,
+          пропускається миттєво — наступний отримує той самий промпт. Число праворуч — температура.
+        </InfoHint>
+      </div>
+
+      {steps.length > 0 && <StepRow {...rowProps(0)} />}
+
+      <Spoiler
+        label={
+          steps.length > 1 ? `Резервні моделі: ${steps.length - 1}` : 'Резервних моделей немає'
+        }
+      >
+        <div className="space-y-2">
+          {steps.slice(1).map((_, i) => (
+            <StepRow key={i + 1} {...rowProps(i + 1)} />
+          ))}
+          <button
+            type="button"
+            onClick={addStep}
+            className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-white"
+          >
+            <Plus className="size-4" />
+            Додати фолбек
+          </button>
+        </div>
+      </Spoiler>
+    </div>
+  );
+}
+
+/**
+ * The reference an operator needs while editing a prompt: every placeholder the
+ * action understands, what lands in it, and which setting supplies it.
+ *
+ * It lists what *may* be used, not what the current text happens to mention —
+ * the point is to discover `{{persona}}` in an illustration prompt, and a list
+ * derived from the prompt itself could never show that.
+ */
+function VariableReference({ action }: { action: AiAction }) {
+  const variables = promptVariables(action);
+
+  return (
+    <Spoiler label={`Довідник змінних: ${variables.length} доступних тут`}>
+      <p className="mb-2 text-xs text-slate-500">
+        Будь-яку з них можна вставити в промпт вище. Невідома назва в подвійних дужках
+        підставляється порожнім рядком, а не лишається в тексті.
+      </p>
+      <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-[9rem_1fr]">
+        {variables.map((variable) => (
+          <Fragment key={variable.name}>
+            <dt>
+              <VarTag name={variable.name} />
+            </dt>
+            <dd className="text-slate-600">
+              {variable.meaning}
+              <span className="block text-slate-400">{variable.source}</span>
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+    </Spoiler>
   );
 }
 
@@ -463,9 +657,7 @@ function StepRow({
         className="w-auto min-w-64 flex-1"
         onChange={(e) => onChange({ ...step, model: e.target.value })}
       >
-        {!known && step.model && (
-          <option value={step.model}>{step.model} (немає в каталозі)</option>
-        )}
+        {!known && step.model && <option value={step.model}>{step.model} (немає в каталозі)</option>}
         {usable.map((m) => (
           <option key={m.id} value={m.id}>
             {/* The human name matters: "Nano Banana" is gemini-2.5-flash-image,
@@ -488,7 +680,9 @@ function StepRow({
             ...step,
             params: {
               ...step.params,
-              ...(e.target.value === '' ? { temperature: undefined } : { temperature: Number(e.target.value) }),
+              ...(e.target.value === ''
+                ? { temperature: undefined }
+                : { temperature: Number(e.target.value) }),
             },
           })
         }
@@ -527,10 +721,6 @@ function StepRow({
   );
 }
 
-/**
- * Shows the attempt trail, not just the output. When a chain misbehaves the
- * useful answer is which step answered and why the earlier ones did not.
- */
 /**
  * The call, shown the way the journal shows one: what went to the model, and
  * what came back.

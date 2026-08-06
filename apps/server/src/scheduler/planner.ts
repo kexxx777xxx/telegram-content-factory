@@ -79,6 +79,24 @@ export async function planTick(): Promise<PlannerReport> {
   }
 }
 
+/**
+ * One project, planned on demand.
+ *
+ * Same pass the tick makes, minus the advisory lock — the lock exists so two
+ * *instances* do not plan the same project twice, and `posts_slot_uniq` still
+ * refuses a duplicate slot if this races the tick. Status is deliberately not
+ * checked: an operator pressing «наповнити буфер» on a paused project is asking
+ * for exactly that, and the posts wait in the buffer either way.
+ */
+export async function planOneProject(projectId: string): Promise<PlannerReport> {
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return { projects: 0, postsPlanned: 0, jobsEnqueued: 0, skipped: true };
+
+  const result = await planProject(project);
+  logger.info({ project_id: projectId, ...result }, 'buffer filled on request');
+  return { projects: 1, ...result, skipped: false };
+}
+
 async function planProject(project: Project): Promise<{ postsPlanned: number; jobsEnqueued: number }> {
   const log = logger.child({ project_id: project.id });
   let postsPlanned = 0;

@@ -1,9 +1,10 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { runChain } from '../ai/chain.js';
 import { db } from '../db/client.js';
-import { posts, type Post } from '../db/schema.js';
+import { posts, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { collectBatch, dropBatch, findProjectBatch, submitBatch } from '../ai/batch.js';
+import { projectVariables } from '../prompts/variables.js';
 import { record } from './activityLog.js';
 
 /**
@@ -270,12 +271,12 @@ export interface ReplenishReport extends InsertReport {
  * the normalized-key check below only catches lexical ones.
  */
 export async function replenishIdeas(
-  projectId: string,
+  project: Project,
   count: number,
-  persona: string,
-  language: string,
   options: { allowBatch?: boolean } = {},
-): Promise<ReplenishReport | 'batched'> {
+): Promise<ReplenishReport | 'batched' | 'blocked'> {
+  const projectId = project.id;
+  const common = await projectVariables(project);
   // Every subject the project has ever had, not just the unused ones: the model
   // is being asked to avoid repeats, and a topic already published is the one it
   // must avoid most.
@@ -287,9 +288,8 @@ export async function replenishIdeas(
     .limit(120);
 
   const variables = {
+    ...common,
     count,
-    persona,
-    language,
     existingTopics:
       existing.length > 0 ? existing.map((t) => `- ${t.title ?? ''}`).join('\n') : '(банк порожній)',
   };
@@ -300,8 +300,9 @@ export async function replenishIdeas(
    * half-price tier. The threshold that triggers a refill is deliberately a
    * *minimum*, which means the bank still has topics while the batch cooks.
    */
-  const batched = await batchedTopics(projectId, variables, options.allowBatch === true);
+  const batched = await batchedTopics(project, variables, options.allowBatch === true);
   if (batched === 'waiting') return 'batched';
+  if (batched === 'blocked') return 'blocked';
 
   const result =
     batched ??
@@ -341,10 +342,11 @@ export async function replenishIdeas(
 
 /** Batch topics: submit when allowed, read when ready, otherwise say nothing. */
 async function batchedTopics(
-  projectId: string,
+  project: Project,
   variables: Record<string, string | number | undefined>,
   allowBatch: boolean,
-): Promise<{ text: string; model: string } | 'waiting' | null> {
+): Promise<{ text: string; model: string } | 'waiting' | 'blocked' | null> {
+  const projectId = project.id;
   const pending = await findProjectBatch(projectId, 'topics');
   if (pending) {
     const outcome = await collectBatch(pending.id);
@@ -356,7 +358,12 @@ async function batchedTopics(
       : null;
   }
 
-  if (!allowBatch) return null;
+  /*
+   * `allowBatch` is false for the button in the UI: «дай теми зараз» cannot
+   * mean «за добу», so a manual refill takes the normal pipeline whatever the
+   * project's batch mode says.
+   */
+  if (!allowBatch || project.batchMode === 'off') return null;
 
   const submitted = await submitBatch({
     action: 'topics',
@@ -368,7 +375,8 @@ async function batchedTopics(
     deadline: new Date(Date.now() + 2 * 24 * 3600_000),
   });
 
-  return submitted ? 'waiting' : null;
+  if (submitted) return 'waiting';
+  return project.batchMode === 'batch_only' ? 'blocked' : null;
 }
 
 /**
@@ -411,12 +419,7 @@ function parseTopics(text: string): { title: string; category?: string | null }[
  * generated on the spot — one more model call inside the critical path, which
  * is exactly the trade-off that mode makes explicit.
  */
-export async function ensureSubject(post: Post, project: {
-  id: string;
-  persona: string;
-  language: string;
-  topicsBufferMin: number;
-}): Promise<Post | null> {
+export async function ensureSubject(post: Post, project: Project): Promise<Post | null> {
   if (post.topicTitle && post.normalizedHash) return post;
 
   const absorbed = await absorbIdea(post.id, project.id);
@@ -425,7 +428,7 @@ export async function ensureSubject(post: Post, project: {
   logger.info({ projectId: project.id }, 'idea bank empty, generating on demand');
   // No batching here by design: this call happens because a post needs a subject
   // *now*, which is the one situation a 24-hour tier cannot serve.
-  await replenishIdeas(project.id, project.topicsBufferMin === 0 ? 1 : 5, project.persona, project.language);
+  await replenishIdeas(project, project.topicsBufferMin === 0 ? 1 : 5);
   return absorbIdea(post.id, project.id);
 }
 

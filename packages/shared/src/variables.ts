@@ -17,30 +17,44 @@ export interface PromptVariable {
   source: string;
 }
 
-const PERSONA: PromptVariable = {
-  name: 'persona',
-  meaning: 'Хто пише і як — тон, погляд, межі теми.',
-  source: 'Проєкт → Моделі і промпти → Голос каналу → Персона.',
-};
-
-const LANGUAGE: PromptVariable = {
-  name: 'language',
-  meaning: 'Код мови, якою пишеться результат.',
-  source: 'Проєкт → Моделі і промпти → Голос каналу → Мова.',
-};
-
-const HASHTAGS: PromptVariable = {
-  name: 'hashtags',
-  meaning: 'Хештеги каналу через пробіл, кожен із решіткою.',
-  source: 'Проєкт → Моделі і промпти → Голос каналу → Хештеги.',
-};
-
-const STYLE: PromptVariable = {
-  name: 'style',
-  meaning: 'Візуальна мова ілюстрацій.',
-  source:
-    'Проєкт → Голос каналу → Стиль ілюстрацій; порожнє поле бере глобальний стиль із Налаштувань.',
-};
+/**
+ * Available in **every** action, because they describe the channel rather than
+ * one step of the pipeline.
+ *
+ * They are passed on every call (`prompts/variables.ts` on the server), so an
+ * illustration prompt may speak about the persona and a topic prompt may use
+ * the post length. Previously each call site passed only what its own default
+ * prompt happened to mention, and anything else rendered as an empty string —
+ * a reference listing those few would have described the defaults, not what is
+ * possible.
+ */
+export const COMMON_VARIABLES: PromptVariable[] = [
+  {
+    name: 'persona',
+    meaning: 'Хто пише і як — тон, погляд, межі теми.',
+    source: 'Проєкт → Моделі і промпти → Голос каналу → Персона.',
+  },
+  {
+    name: 'language',
+    meaning: 'Код мови, якою пишеться результат.',
+    source: 'Проєкт → Моделі і промпти → Голос каналу → Мова.',
+  },
+  {
+    name: 'hashtags',
+    meaning: 'Хештеги каналу через пробіл, кожен із решіткою.',
+    source: 'Проєкт → Моделі і промпти → Голос каналу → Хештеги.',
+  },
+  {
+    name: 'style',
+    meaning: 'Візуальна мова ілюстрацій.',
+    source: 'Проєкт → Голос каналу → Стиль ілюстрацій; порожнє поле бере глобальний стиль.',
+  },
+  {
+    name: 'maxChars',
+    meaning: 'Цільова довжина поста у видимих символах.',
+    source: 'Проєкт → Огляд → Публікація → Довжина поста.',
+  },
+];
 
 const TOPIC: PromptVariable = {
   name: 'topic',
@@ -48,10 +62,9 @@ const TOPIC: PromptVariable = {
   source: 'Банк тем проєкту (вкладка «Пости»); у тестовому запуску — приклад.',
 };
 
-export const PROMPT_VARIABLES: Record<AiAction, PromptVariable[]> = {
+/** What each action adds on top of {@link COMMON_VARIABLES}. */
+export const ACTION_VARIABLES: Record<AiAction, PromptVariable[]> = {
   topics: [
-    PERSONA,
-    LANGUAGE,
     {
       name: 'count',
       meaning: 'Скільки тем просити за один виклик.',
@@ -63,35 +76,27 @@ export const PROMPT_VARIABLES: Record<AiAction, PromptVariable[]> = {
       source: 'До 120 останніх тем проєкту, включно з опублікованими.',
     },
   ],
-  post_text: [
-    PERSONA,
-    LANGUAGE,
-    TOPIC,
-    HASHTAGS,
-    {
-      name: 'maxChars',
-      meaning: 'Цільова довжина поста у видимих символах.',
-      source: 'Проєкт → Огляд → Публікація → Довжина поста.',
-    },
-  ],
-  svg: [TOPIC, STYLE],
+  post_text: [TOPIC],
+  svg: [TOPIC],
   svg_repair: [
+    TOPIC,
     { name: 'error', meaning: 'Чому санітайзер відхилив схему.', source: 'Санітайзер SVG.' },
     { name: 'svgSource', meaning: 'Відхилений SVG цілком.', source: 'Попередня відповідь моделі.' },
   ],
   image_prompt: [
+    TOPIC,
     {
       name: 'postText',
       meaning: 'Готовий текст поста без розмітки.',
       source: 'Результат дії «Текст поста».',
     },
-    STYLE,
   ],
-  image: [
-    {
-      name: 'imagePrompt',
-      meaning: 'Промпт англійською, складений попередньою дією.',
-      source: 'Результат дії «Промпт для зображення».',
-    },
-  ],
+  // The drawing model receives the text produced by `image_prompt` directly, so
+  // this action has no prompt of its own to fill in.
+  image: [],
 };
+
+/** Everything usable in one action: the channel-wide set plus its own. */
+export function promptVariables(action: AiAction): PromptVariable[] {
+  return [...COMMON_VARIABLES, ...ACTION_VARIABLES[action]];
+}

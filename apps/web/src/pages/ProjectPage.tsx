@@ -3,6 +3,7 @@ import { AlertCircle, ArrowLeft, Check, Loader2, PlugZap, Trash2, X } from 'luci
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { zoneDiffers, zoneLabel } from '../lib/time';
 import { GenerationConfig } from '../components/GenerationConfig';
 import {
   ProjectForm,
@@ -107,7 +108,15 @@ export function ProjectPage() {
         <Link to="/projects" className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
           <ArrowLeft className="size-5" />
         </Link>
-        <h1 className="text-xl font-semibold">{isNew ? 'Новий проєкт' : project?.name}</h1>
+        <div>
+          <h1 className="text-xl font-semibold">{isNew ? 'Новий проєкт' : project?.name}</h1>
+          {/* Slots, «наступна публікація» and the post list are all in the
+              channel's zone, not the operator's. Said once here rather than
+              appended to every clock on the page. */}
+          {project && zoneDiffers(project.timezone) && (
+            <p className="text-xs text-slate-400">Час проєкту: {zoneLabel(project.timezone)}</p>
+          )}
+        </div>
 
         {/*
           Status sits with the title rather than inside the form: it is the one
@@ -165,7 +174,13 @@ export function ProjectPage() {
               {/* Buffers are about how much work is done ahead, not about when
                   the channel speaks — so they sit with the other project
                   settings rather than inside the schedule. */}
-              <ProjectForm value={form} onChange={setForm} mode="edit" section="buffers" />
+              <ProjectForm
+                value={form}
+                onChange={setForm}
+                mode="edit"
+                section="buffers"
+                onFillBuffer={id ? () => api.fillBuffer(id) : undefined}
+              />
               <ProjectForm value={form} onChange={setForm} mode="edit" section="log" />
             </>
           )}

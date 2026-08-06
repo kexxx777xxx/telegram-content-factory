@@ -63,12 +63,14 @@ ideasRouter.post('/projects/:id/ideas/replenish', async (req, res) => {
   try {
     // The button means "give me topics now", so it never batches — but it does
     // collect an answer a scheduled batch already produced.
-    const report = await replenishIdeas(
-      project.id,
-      parsed.data.count,
-      project.persona,
-      project.language,
-    );
+    const report = await replenishIdeas(project, parsed.data.count);
+
+    if (report === 'blocked') {
+      res.status(409).json({
+        error: 'Режим «лише batch»: провайдер не прийняв замовлення, теми не поповнено',
+      });
+      return;
+    }
 
     if (report === 'batched') {
       res.status(202).json({ error: 'Теми ще готуються в batch-джобі, спробуйте за кілька хвилин' });

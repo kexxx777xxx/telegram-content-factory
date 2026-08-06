@@ -59,6 +59,7 @@ export async function getGenerationConfig(projectId: string | null): Promise<Act
       apiKeyId: chain?.apiKeyId ?? null,
       keyLevel: key.level,
       keyLabel: key.label,
+      keyId: key.id,
       chainInherited: projectId !== null && ownChain.length === 0,
       prompt: { body: prompt.body, version: prompt.version, scope: prompt.scope },
       promptInherited: projectId !== null && ownPrompt.length === 0,

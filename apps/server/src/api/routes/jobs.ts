@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../../db/client.js';
-import { jobs, projects } from '../../db/schema.js';
+import { jobs, posts, projects } from '../../db/schema.js';
 import { logger } from '../../logger.js';
 import { jobCounts, retryJob } from '../../queue/enqueue.js';
 import { planTick } from '../../scheduler/planner.js';
@@ -47,6 +47,7 @@ jobsRouter.get('/jobs', async (req, res) => {
       projectId: jobs.projectId,
       // The id answers nothing when read; the name is why the row is here.
       projectName: projects.name,
+      payload: jobs.payload,
       status: jobs.status,
       attempts: jobs.attempts,
       maxAttempts: jobs.maxAttempts,
@@ -62,16 +63,49 @@ jobsRouter.get('/jobs', async (req, res) => {
     .orderBy(desc(jobs.updatedAt))
     .limit(query.data.limit);
 
+  /*
+   * The subject of each job, resolved in one query rather than per row.
+   *
+   * A queue row saying `publish_post` and nothing else is unactionable: the one
+   * question in front of it is «який пост?», and the answer — its topic and a
+   * link — lives two tables away. Jobs whose target has since been deleted come
+   * back with a null topic, which is itself the answer: nothing to fix, only to
+   * remove.
+   */
+  const postIds = [...new Set(rows.map(payloadPostId).filter((id): id is string => id !== null))];
+  const subjects = postIds.length
+    ? await db
+        .select({ id: posts.id, topicTitle: posts.topicTitle, status: posts.status })
+        .from(posts)
+        .where(inArray(posts.id, postIds))
+    : [];
+  const byId = new Map(subjects.map((row) => [row.id, row]));
+
   res.json({
     counts: await jobCounts(),
-    jobs: rows.map((row) => ({
-      ...row,
-      runAfter: row.runAfter.toISOString(),
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-    })),
+    jobs: rows.map(({ payload, ...row }) => {
+      const postId = payloadPostId({ payload });
+      const post = postId ? byId.get(postId) : undefined;
+      return {
+        ...row,
+        postId: postId,
+        /** null both when the job has no post and when that post is gone. */
+        postTopic: post?.topicTitle ?? null,
+        postStatus: post?.status ?? null,
+        postExists: postId !== null && post !== undefined,
+        runAfter: row.runAfter.toISOString(),
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    }),
   });
 });
+
+/** Every job that works on a post carries its id here; the rest carry nothing. */
+function payloadPostId(row: { payload: unknown }): string | null {
+  const postId = (row.payload as { postId?: unknown } | null)?.postId;
+  return typeof postId === 'string' ? postId : null;
+}
 
 /** Resets attempts and requeues — for jobs that died on a since-fixed cause. */
 jobsRouter.post('/jobs/:id/retry', async (req, res) => {

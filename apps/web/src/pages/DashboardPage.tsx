@@ -1,9 +1,10 @@
-import { AlertTriangle, Ban, Clock, Loader2, RotateCcw } from 'lucide-react';
+import { AlertTriangle, Clock, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type DashboardData } from '../api/client';
-import { formatDateTime, formatLocalTime, zoneDiffers } from '../lib/time';
-import { Badge, Button, Card, Notice } from '../components/ui';
+import { QueueCard } from '../components/QueueCard';
+import { formatDateTime, formatLocalTime } from '../lib/time';
+import { Badge, Card, Notice } from '../components/ui';
 
 /**
  * Reads as "is anything about to go wrong", not "what happened".
@@ -72,7 +73,7 @@ export function DashboardPage() {
 
       <Card
         title="Проєкти"
-        hint="«Буфер» — скільки постів уже готові наперед. Поки це число більше за нуль, найближчий слот вийде навіть якщо моделі зараз недоступні; нуль означає, що пост робитиметься в останню мить."
+        hint="«Буфер» — скільки постів уже готові наперед. Поки це число більше за нуль, найближчий слот вийде навіть якщо моделі зараз недоступні; нуль означає, що пост робитиметься в останню мить. Час у таблиці — у поясі кожного проєкту."
       >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -149,7 +150,10 @@ export function DashboardPage() {
           </div>
         </Card>
 
-        <Card title="Витрати сьогодні">
+        <Card
+          title="Витрати по ключах"
+          hint="За сьогодні. Лічильники скидаються опівночі за UTC — це груба межа для бюджету, а не білінговий період провайдера."
+        >
           <div className="space-y-2 text-sm">
             {data.spendToday.length === 0 ? (
               <p className="text-slate-500">Ключів немає.</p>
@@ -169,42 +173,14 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <Card title="Черга">
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-3 text-sm">
-            {Object.entries(data.queue).map(([status, count]) => (
-              <span key={status} className="flex items-center gap-1.5">
-                <Badge tone={status === 'dead' ? 'red' : status === 'done' ? 'green' : 'neutral'}>
-                  {status}
-                </Badge>
-                <strong>{count}</strong>
-              </span>
-            ))}
-            {Object.keys(data.queue).length === 0 && (
-              <span className="text-slate-500">Черга порожня.</span>
-            )}
-          </div>
+      {/*
+        The same queue as in settings, not a summary of it.
+        A count of dead jobs with no way to see which they are, or to do
+        anything about them, is a notification — and the place people look first
+        is the dashboard.
+      */}
+      <QueueCard />
 
-          {data.deadJobs.length > 0 && (
-            <div className="space-y-1.5">
-              {data.deadJobs.map((job) => (
-                <div key={job.id} className="flex flex-wrap items-center gap-2 text-xs">
-                  <Ban className="size-3.5 text-red-500" />
-                  <code className="rounded bg-slate-100 px-1.5 py-0.5">{job.type}</code>
-                  <span className="min-w-0 flex-1 truncate text-red-600">{job.lastError}</span>
-                  <Button
-                    variant="secondary"
-                    onClick={() => void api.retryJob(job.id).then(() => void reload())}
-                  >
-                    <RotateCcw className="size-3.5" />
-                    Ще раз
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </Card>
     </div>
   );
 }
@@ -232,7 +208,7 @@ function formatSlot(iso: string | null, timezone: string): React.ReactNode {
   return (
     <span className="flex items-center gap-1.5">
       <Clock className="size-3.5 text-slate-400" />
-      {formatDateTime(iso, { timezone, withZone: zoneDiffers(timezone) })}
+      {formatDateTime(iso, { timezone })}
     </span>
   );
 }

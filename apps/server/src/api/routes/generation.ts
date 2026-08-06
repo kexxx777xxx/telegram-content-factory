@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ChainExhaustedError, ChainMissingError, runChain } from '../../ai/chain.js';
 import { logger } from '../../logger.js';
 import { renderPrompt, resolvePrompt } from '../../prompts/resolve.js';
-import { resolveStyle } from '../../services/settings.js';
+import { projectVariables } from '../../prompts/variables.js';
 import {
   clearActionOverrides,
   getGenerationConfig,
@@ -97,14 +97,11 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
     throw err;
   }
 
+  // The same base every real call gets, so a dry run exercises the prompt an
+  // operator will actually ship — not a reduced version of it.
   const variables = {
-    ...defaultVariables(parsed.data.action, {
-      persona: project.persona,
-      language: project.language,
-      hashtags: project.hashtags.join(' '),
-      style: await resolveStyle(project.imageStyle),
-      maxChars: project.postMaxChars,
-    }),
+    ...(await projectVariables(project)),
+    ...sampleVariables(parsed.data.action),
     ...parsed.data.variables,
   };
 
@@ -165,48 +162,30 @@ generationRouter.post('/projects/:id/dry-run', async (req, res) => {
   }
 });
 
-/** Plausible placeholders so a dry run exercises the real prompt shape. */
-function defaultVariables(
-  action: AiAction,
-  project: {
-    persona: string;
-    language: string;
-    hashtags: string;
-    style: string;
-    maxChars: number;
-  },
-): Record<string, string> {
-  const base = {
-    persona: project.persona || 'Досвідчений практик, пише стисло й по суті.',
-    language: project.language,
-    hashtags: project.hashtags,
-    style: project.style,
-    maxChars: String(project.maxChars),
-  };
+/**
+ * Stand-ins for the values a real run would carry from the pipeline.
+ *
+ * Only the action-specific ones: everything that describes the channel comes
+ * from the project itself, because a test run that invented a persona would be
+ * testing a prompt nobody ships.
+ */
+function sampleVariables(action: AiAction): Record<string, string> {
+  const topic = 'Ідемпотентність у чергах повідомлень';
 
   switch (action) {
     case 'topics':
-      return { ...base, count: '5', existingTopics: '(банк порожній)' };
+      return { count: '5', existingTopics: '(банк порожній)' };
     case 'post_text':
-      return { ...base, topic: 'Ідемпотентність у чергах повідомлень' };
     case 'svg':
-      return { ...base, topic: 'Ідемпотентність у чергах повідомлень' };
+      return { topic };
     case 'svg_repair':
-      return {
-        ...base,
-        error: 'Кореневий елемент не <svg>',
-        svgSource: '<div>not an svg</div>',
-      };
+      return { topic, error: 'Кореневий елемент не <svg>', svgSource: '<div>not an svg</div>' };
     case 'image_prompt':
       return {
-        ...base,
+        topic,
         postText: 'Коротка нотатка про те, чому повторна доставка повідомлень неминуча.',
       };
     case 'image':
-      return {
-        ...base,
-        imagePrompt:
-          'A 16:9 hand-drawn schematic on grid paper, pencil and ink, pastel highlighter accents, no text.',
-      };
+      return {};
   }
 }

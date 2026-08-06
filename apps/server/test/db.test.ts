@@ -31,6 +31,8 @@ import {
   savePromptVersion,
 } from '../src/prompts/resolve.js';
 import { BUILTIN_STYLE, DEFAULT_PROMPTS } from '../src/prompts/defaults.js';
+import { projectVariables } from '../src/prompts/variables.js';
+import { COMMON_VARIABLES, promptVariables } from '@tcf/shared';
 import { forgetSettings, resolveStyle, saveSettings } from '../src/services/settings.js';
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
 import { listPosts, resetForRegeneration } from '../src/services/posts.js';
@@ -479,6 +481,27 @@ describe('batch reaches the buffer at all', () => {
     expect(job!.runAfter.getTime()).toBeLessThan(Date.now() + BATCH_MIN_SLACK_MS);
   });
 
+  it('keeps the lead time when the project turned batch off', async () => {
+    // The key can batch; the project said not to. Without this the mode was a
+    // label on a form — the planner would still start the post days early to
+    // wait for a batch that the generation step then refuses to submit.
+    await ensureDefaultPrompts();
+    await makeBatchKey(true);
+    const project = await makeProject({
+      postsBuffer: 7,
+      leadTimeMinutes: 180,
+      status: 'active',
+      batchMode: 'off',
+    });
+    await ensureDefaultChains();
+
+    await planTick();
+
+    const job = await firstGenerateJob(project.id);
+    expect(job).toBeDefined();
+    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+
   it('keeps the lead time when the key cannot batch', async () => {
     await ensureDefaultPrompts();
     await makeBatchKey(false);
@@ -909,5 +932,49 @@ describe('post length', () => {
     // to change the limit — which is exactly what the setting exists to avoid.
     expect(DEFAULT_PROMPTS.post_text).toContain('{{maxChars}}');
     expect(DEFAULT_PROMPTS.post_text).not.toContain('1024');
+  });
+});
+
+describe('prompt variables', () => {
+  beforeEach(async () => {
+    await db.delete(appSettings);
+    forgetSettings();
+  });
+
+  it('gives every action the channel-wide set, not just its own', async () => {
+    // The reference in the UI promises these are usable anywhere. They are only
+    // usable if every call site actually passes them — an illustration prompt
+    // mentioning {{persona}} used to render an empty string, silently.
+    const project = await makeProject({
+      persona: 'Практик',
+      language: 'uk',
+      hashtags: ['#arch', '#db'],
+      postMaxChars: 700,
+    });
+
+    const vars = await projectVariables(project);
+
+    expect(vars).toMatchObject({
+      persona: 'Практик',
+      language: 'uk',
+      hashtags: '#arch #db',
+      maxChars: 700,
+    });
+    // Style falls through the same chain resolveStyle owns.
+    expect(vars.style).toBe(BUILTIN_STYLE);
+  });
+
+  it('lists in the reference exactly what a prompt may use', async () => {
+    // Both sides of the same fact: the shared record the UI renders, and the
+    // variables the server passes. A name in one and not the other is a lie in
+    // whichever direction it happens.
+    const project = await makeProject();
+    const passed = Object.keys(await projectVariables(project));
+
+    for (const variable of COMMON_VARIABLES) {
+      expect(passed).toContain(variable.name);
+    }
+    expect(promptVariables('post_text').map((v) => v.name)).toContain('topic');
+    expect(promptVariables('svg').map((v) => v.name)).toContain('persona');
   });
 });

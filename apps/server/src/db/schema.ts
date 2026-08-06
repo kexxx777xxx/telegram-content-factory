@@ -5,6 +5,7 @@ import {
   JOB_STATUSES,
   JOB_TYPES,
   MISS_POLICIES,
+  BATCH_MODES,
   BATCH_STATES,
   LOG_KINDS,
   LOG_SOURCES,
@@ -37,6 +38,7 @@ export const projectStatusEnum = pgEnum('project_status', PROJECT_STATUSES);
 export const imageModeEnum = pgEnum('image_mode', IMAGE_MODES);
 export const publishModeEnum = pgEnum('publish_mode', PUBLISH_MODES);
 export const missPolicyEnum = pgEnum('miss_policy', MISS_POLICIES);
+export const batchModeEnum = pgEnum('batch_mode', BATCH_MODES);
 export const postStatusEnum = pgEnum('post_status', POST_STATUSES);
 export const postSourceEnum = pgEnum('post_source', POST_SOURCES);
 export const keyTierEnum = pgEnum('key_tier', KEY_TIERS);
@@ -98,6 +100,8 @@ export const projects = pgTable(
 
     /** Target post length; reaches the text prompt as {{maxChars}}. */
     postMaxChars: integer('post_max_chars').notNull().default(1024),
+    /** How much of the buffered work may go to the batch tier. */
+    batchMode: batchModeEnum('batch_mode').notNull().default('partial'),
 
     /**
      * One switch for the whole journal. Two ("requests" and "responses") only

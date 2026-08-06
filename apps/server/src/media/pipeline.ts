@@ -4,7 +4,7 @@ import { resolveChain } from '../ai/chains.js';
 import { providers } from '../ai/gemini.js';
 import { resolveKey } from '../ai/keys.js';
 import { record } from '../services/activityLog.js';
-import { resolveStyle } from '../services/settings.js';
+import { projectVariables } from '../prompts/variables.js';
 import { acquire, openCircuit, recordUsage } from '../ai/rateLimiter.js';
 import { LlmError } from '../ai/provider.js';
 import type { Project } from '../db/schema.js';
@@ -81,7 +81,7 @@ async function generateWithSvg(
       action: 'svg',
       projectId: project.id,
       postId: post.id,
-      variables: { topic, style: await resolveStyle(project.imageStyle) },
+      variables: { ...(await projectVariables(project)), topic },
       // A schematic is ~4k output tokens; the default 60s budget is for prose.
       timeoutMs: SVG_TIMEOUT_MS,
     });
@@ -111,7 +111,12 @@ async function generateWithSvg(
         action: 'svg_repair',
         projectId: project.id,
         postId: post.id,
-        variables: { error: lastError, svgSource: lastSource.slice(0, 12_000) },
+        variables: {
+          ...(await projectVariables(project)),
+          topic,
+          error: lastError,
+          svgSource: lastSource.slice(0, 12_000),
+        },
         timeoutMs: SVG_TIMEOUT_MS,
       });
       const rendered = await tryRender(repaired.text, repaired.model);
@@ -153,8 +158,9 @@ async function generateWithImageModel(
     projectId: project.id,
     postId: post.id,
     variables: {
+      ...(await projectVariables(project)),
+      topic: post.topicTitle ?? '',
       postText: stripTags(post.textHtml ?? post.topicTitle ?? ''),
-      style: await resolveStyle(project.imageStyle),
     },
   });
 

@@ -68,6 +68,12 @@ export interface JobDto {
   runAfter: string;
   lastError: string | null;
   dedupeKey: string | null;
+  /** The post this job works on, when it works on one. */
+  postId: string | null;
+  postTopic: string | null;
+  postStatus: string | null;
+  /** False when the payload names a post that no longer exists. */
+  postExists: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +126,10 @@ export const api = {
   updateProject: (id: string, patch: ProjectUpdate) =>
     request<ProjectDto>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  fillBuffer: (id: string) =>
+    request<{ postsPlanned: number; jobsEnqueued: number }>(`/projects/${id}/fill-buffer`, {
+      method: 'POST',
+    }),
   verifyTelegram: (id: string) =>
     request<TelegramCheck>(`/projects/${id}/verify-telegram`, { method: 'POST' }),
 

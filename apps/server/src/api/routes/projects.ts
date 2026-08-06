@@ -16,6 +16,7 @@ import {
 } from '../../services/projects.js';
 import { projectLog } from '../../services/activityLog.js';
 import { launchProject, NotLaunchableError } from '../../services/publishNow.js';
+import { planOneProject } from '../../scheduler/planner.js';
 import { verifyTelegram } from '../../telegram/verify.js';
 
 export const projectsRouter: Router = Router();
@@ -203,6 +204,28 @@ projectsRouter.post('/projects/:id/publish-now', async (req, res) => {
     }
     throw err;
   }
+});
+
+/**
+ * Fills the buffer to its configured depth right now.
+ *
+ * The planner would do it on its own tick, but «наперед» is exactly the thing
+ * an operator wants to see happen *after* changing the buffer, not in a minute
+ * — and after a stretch of downtime the difference is a whole empty buffer.
+ */
+projectsRouter.post('/projects/:id/fill-buffer', async (req, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: firstIssue(params.error) });
+    return;
+  }
+
+  const report = await planOneProject(params.data.id);
+  if (report.skipped) {
+    res.status(404).json({ error: 'Проєкт не знайдено' });
+    return;
+  }
+  res.json(report);
 });
 
 function firstIssue(error: z.ZodError): string {

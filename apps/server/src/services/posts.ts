@@ -15,6 +15,7 @@ import {
   findBatch,
   submitBatch,
 } from '../ai/batch.js';
+import { projectVariables } from '../prompts/variables.js';
 import { record } from './activityLog.js';
 import { ensureSubject, insertIdeas } from './ideas.js';
 
@@ -24,14 +25,14 @@ export class PostNotFoundError extends Error {}
  * Text from the batch tier, or a decision about waiting for it.
  *
  * Returns a chain-shaped result when the answer is already in, `'waiting'`
- * while it is still cooking, and `null` when batch is not on the table at all —
- * so the caller's only branch is "did I get text".
+ * while it is still cooking, `'blocked'` when the project asked for batch and
+ * nothing else, and `null` when the normal pipeline should just run.
  */
 async function batchedText(
   post: Post,
   project: Project,
   variables: Record<string, string | number | undefined>,
-): Promise<ChainRunResult | 'waiting' | null> {
+): Promise<ChainRunResult | 'waiting' | 'blocked' | null> {
   /*
    * No slot means nobody is waiting on a schedule — which sounds like the ideal
    * batch candidate but is the opposite. A post without a slot is being run by
@@ -64,7 +65,14 @@ async function batchedText(
     return null;
   }
 
+  /*
+   * Too close to the slot — or no slot at all, which means someone pressed a
+   * button just now. Either way there is no day to spare, so the mode does not
+   * enter into it: the normal pipeline runs.
+   */
   if (!slot || slot.getTime() - Date.now() < BATCH_MIN_SLACK_MS) return null;
+
+  if (project.batchMode === 'off') return null;
 
   const submitted = await submitBatch({
     action: 'post_text',
@@ -76,7 +84,14 @@ async function batchedText(
     deadline: new Date(slot.getTime() - 2 * 3600_000),
   });
 
-  return submitted ? 'waiting' : null;
+  if (submitted) return 'waiting';
+
+  /*
+   * «Лише batch» is a statement about price, and generating at full price is
+   * exactly what it forbids. The slot is left empty rather than filled at twice
+   * the cost — the miss policy then decides what happens when it arrives.
+   */
+  return project.batchMode === 'batch_only' ? 'blocked' : null;
 }
 
 /** Statuses a generation job may legitimately start from. */
@@ -147,24 +162,13 @@ export async function generatePostText(
    * The topic is claimed before anything else, because both paths need it: the
    * batch prompt is rendered from it, and so is the synchronous one.
    */
-  const withSubject = await ensureSubject(post, {
-    id: project.id,
-    persona: project.persona,
-    language: project.language,
-    topicsBufferMin: project.topicsBufferMin,
-  });
+  const withSubject = await ensureSubject(post, project);
   if (!withSubject?.topicTitle) {
     throw new ChainMissingError('Немає доступної теми і не вдалося згенерувати нову');
   }
   const topicTitle = withSubject.topicTitle;
 
-  const variables = {
-    topic: topicTitle,
-    persona: project.persona,
-    language: project.language,
-    hashtags: project.hashtags.join(' '),
-    maxChars: project.postMaxChars,
-  };
+  const variables = { ...(await projectVariables(project)), topic: topicTitle };
 
   /*
    * Batch first, when the slot is far enough away to afford a 24-hour answer.
@@ -176,6 +180,22 @@ export async function generatePostText(
    */
   const batched = await batchedText(post, project, variables);
   if (batched === 'waiting') return 'batched';
+
+  if (batched === 'blocked') {
+    log.warn('batch-only project cannot batch this slot, generation skipped');
+    await record({
+      projectId: project.id,
+      postId: post.id,
+      kind: 'note',
+      action: 'post_text',
+      source: 'auto',
+      ok: false,
+      message:
+        'Режим «лише batch»: замовлення не прийнято (ключ без batch або провайдер відмовив), ' +
+        'тому синхронна генерація не запускалась',
+    });
+    return 'skipped';
+  }
 
   await db
     .update(posts)

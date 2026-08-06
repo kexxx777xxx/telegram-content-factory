@@ -1,7 +1,7 @@
 import type { AiAction } from '@tcf/shared';
 import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { batchJobs, type BatchJob } from '../db/schema.js';
+import { batchJobs, projects, type BatchJob } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { record } from '../services/activityLog.js';
 import { resolveChain } from './chains.js';
@@ -33,6 +33,13 @@ export const BATCH_MIN_SLACK_MS = BATCH_TURNAROUND_MS + 2 * 3600_000;
  * and the job can be started early enough to use the cheap tier.
  */
 export async function canBatch(projectId: string, action: AiAction): Promise<boolean> {
+  const [project] = await db
+    .select({ batchMode: projects.batchMode })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (project?.batchMode === 'off') return false;
+
   const chain = await resolveChain(action, projectId);
   const step = chain?.steps[0];
   if (!step) return false;

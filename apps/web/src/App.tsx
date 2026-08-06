@@ -1,8 +1,9 @@
-import { AlertTriangle, LayoutGrid, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, Clock, LayoutGrid, Loader2, LogOut, Radio, SlidersHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import type { Health } from '@tcf/shared';
 import { api, ApiError, type SessionState } from './api/client';
+import { zoneLabel } from './lib/time';
 import { LoginScreen } from './pages/LoginScreen';
 import { ProjectPage } from './pages/ProjectPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -58,6 +59,16 @@ export function App() {
               <span className="font-semibold">Telegram Content Factory</span>
             </Link>
             <div className="ml-auto flex items-center gap-4 text-sm text-slate-500">
+              {/* Stated once, here, so no timestamp on any screen has to carry
+                  a «(GMT+3)» of its own. Times outside a project are shown in
+                  this zone; a project's own times are labelled on its page. */}
+              <span
+                className="hidden items-center gap-1.5 text-xs text-slate-400 sm:flex"
+                title="Час в інтерфейсі — у вашому поясі; час проєкту показано в його власному"
+              >
+                <Clock className="size-3.5" />
+                {zoneLabel()}
+              </span>
               <Link to="/projects" className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-slate-100">
                 <LayoutGrid className="size-4" />
                 Проєкти
