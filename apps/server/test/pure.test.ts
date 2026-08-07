@@ -9,7 +9,7 @@ import { buildPermalink } from '../src/telegram/permalink.js';
 import { splitForMessages } from '../src/telegram/publisher.js';
 import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
-import { BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
+import { BATCH_DEADLINE_MARGIN_MS, BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 import { MIN_REFILL_BATCH, refillCount } from '../src/services/ideas.js';
 import { textBudget } from '@tcf/shared';
 
@@ -334,10 +334,13 @@ describe('retry backoff', () => {
 });
 
 describe('batch tier', () => {
-  it('needs more slack than the vendor turnaround, not less', () => {
-    // The rule the money depends on: a slot closer than the SLA must never be
-    // parked on the cheap tier, or "дешевше" turns into "не вийшло вчасно".
-    expect(BATCH_MIN_SLACK_MS).toBeGreaterThan(BATCH_TURNAROUND_MS);
+  it('лишає час і на очікування, і на відкат до звичайного виклику', () => {
+    // Поріг у 26 годин (стеля вендора + запас) не спрацьовував ніколи: буфер
+    // планує `postsBuffer` слотів уперед, і найдальший з них ближче за добу.
+    // Тепер поріг менший за стелю — свідомо, бо від повільного batch береже
+    // дедлайн, а не очікування. Але вікно на саме очікування має лишатись.
+    expect(BATCH_MIN_SLACK_MS).toBeLessThan(BATCH_TURNAROUND_MS);
+    expect(BATCH_MIN_SLACK_MS - BATCH_DEADLINE_MARGIN_MS).toBeGreaterThanOrEqual(2 * 3600_000);
   });
 });
 

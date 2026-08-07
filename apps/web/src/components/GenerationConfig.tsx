@@ -588,16 +588,13 @@ function ChainEditor({
     onRemove: () => onChange(steps.filter((_, i) => i !== index)),
   });
 
-  const addStep = () =>
-    onChange([
-      ...steps,
-      {
-        provider: 'gemini',
-        model: modelsForAction(models, action)[0]?.id ?? '',
-        params: {},
-        promptId: null,
-      },
-    ]);
+  // Перша модель, якої в ланцюжку ще немає. Резерв, що дублює крок вище, —
+  // це не резерв: він упаде рівно там само і з тієї ж причини.
+  const addStep = () => {
+    const usable = modelsForAction(models, action);
+    const free = usable.find((m) => !steps.some((s) => s.model === m.id)) ?? usable[0];
+    onChange([...steps, { provider: 'gemini', model: free?.id ?? '', params: {}, promptId: null }]);
+  };
 
   /*
    * Модель і ключ — один рядок, бо це одне рішення: чим і за чий рахунок

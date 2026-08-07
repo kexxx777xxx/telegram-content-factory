@@ -9,6 +9,7 @@ import { removeStagedImage } from '../media/staging.js';
 import { sendApprovalCard } from '../telegram/adminBot.js';
 import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
 import {
+  BATCH_DEADLINE_MARGIN_MS,
   BATCH_MIN_SLACK_MS,
   collectBatch,
   dropBatch,
@@ -81,7 +82,7 @@ async function batchedText(
     variables,
     // Stop waiting well before the slot: the illustration still has to be made
     // after the text arrives.
-    deadline: new Date(slot.getTime() - 2 * 3600_000),
+    deadline: new Date(slot.getTime() - BATCH_DEADLINE_MARGIN_MS),
   });
 
   if (submitted) return 'waiting';
