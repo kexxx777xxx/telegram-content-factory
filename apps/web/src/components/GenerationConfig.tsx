@@ -49,7 +49,6 @@ import {
 interface ActionGroup {
   key: string;
   title: string;
-  hint: string;
   /** First one is the group's main action; the rest are its follow-ups. */
   actions: { action: AiAction; label: string; note?: string }[];
 }
@@ -58,19 +57,16 @@ const GROUPS: ActionGroup[] = [
   {
     key: 'topics',
     title: 'Теми',
-    hint: 'Поповнення банку тем',
     actions: [{ action: 'topics', label: 'Генерація тем' }],
   },
   {
     key: 'post_text',
     title: 'Текст поста',
-    hint: 'Основний текст публікації',
     actions: [{ action: 'post_text', label: 'Текст поста' }],
   },
   {
     key: 'svg',
     title: 'SVG-схема',
-    hint: 'Ілюстрація, коли режим — SVG',
     actions: [
       { action: 'svg', label: 'Малювання схеми' },
       {
@@ -83,7 +79,6 @@ const GROUPS: ActionGroup[] = [
   {
     key: 'image',
     title: 'Зображення',
-    hint: 'Ілюстрація, коли режим — image-модель',
     actions: [
       { action: 'image_prompt', label: 'Промпт для зображення' },
       {
@@ -620,7 +615,7 @@ function ChainEditor({
 
         <Select
           value={apiKeyId ?? ''}
-          className="w-auto min-w-52 shrink-0"
+          className="w-56 shrink-0"
           title={
             apiKeyId === null
               ? `Ключ обирається автоматично: ${KEY_LEVEL_LABELS[keyLevel]}`
@@ -736,11 +731,11 @@ function StepRow({
 
   return (
     <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-      <span className="w-6 shrink-0 text-xs text-slate-400">{index + 1}.</span>
+      <span className="w-5 shrink-0 text-xs text-slate-400">{index + 1}.</span>
 
       <Select
         value={step.model}
-        className="w-auto min-w-0 flex-1"
+        className="min-w-0 flex-1"
         onChange={(e) => onChange({ ...step, model: e.target.value })}
       >
         {!known && step.model && <option value={step.model}>{step.model} (немає в каталозі)</option>}
@@ -752,6 +747,33 @@ function StepRow({
           </option>
         ))}
       </Select>
+
+      {/*
+        Температура тут же, а не окремим поверхом: разом із моделлю це одне
+        речення — «ця модель, ось так налаштована». Порожнє поле означає
+        дефолт провайдера, тож підпис їй не потрібен, вистачає плейсхолдера.
+      */}
+      <Input
+        type="number"
+        step="0.1"
+        min={0}
+        max={2}
+        placeholder="t°"
+        title="Температура; порожнє — за замовчуванням моделі"
+        className="w-16 shrink-0"
+        value={step.params.temperature ?? ''}
+        onChange={(e) =>
+          onChange({
+            ...step,
+            params: {
+              ...step.params,
+              ...(e.target.value === ''
+                ? { temperature: undefined }
+                : { temperature: Number(e.target.value) }),
+            },
+          })
+        }
+      />
 
       <div className="flex shrink-0 items-center gap-0.5">
         <button

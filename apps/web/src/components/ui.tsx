@@ -5,7 +5,22 @@ import type { InputHTMLAttributes } from 'react';
 /** Small shared primitives so forms stay declarative and visually consistent. */
 
 const inputBase =
-  'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 disabled:bg-slate-50 disabled:text-slate-400';
+  'rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 disabled:bg-slate-50 disabled:text-slate-400';
+
+/**
+ * `w-full`, поки викликач не сказав інакше.
+ *
+ * Ширина була вшита в `inputBase`, і будь-який `w-20` збоку програвав їй у
+ * стилі — два класи однакової ваги, виграє той, що нижче в згенерованому CSS.
+ * Наслідок видно було не як «клас не спрацював», а як поле, що зайняло цілий
+ * рядок: рядок «модель · температура · кнопки» розсипався на три поверхи, і
+ * полагодити його з боку викликача було неможливо.
+ */
+function width(className?: string): string {
+  // Саме `w-…` на початку класу: `max-w-32` ширини не задає, лише стелю, і
+  // такому полю `w-full` усе ще потрібен.
+  return /(^|\s)(w-|flex-1|basis-)/.test(className ?? '') ? '' : 'w-full';
+}
 
 /**
  * An explanation parked behind an ⓘ next to whatever it explains.
@@ -119,15 +134,27 @@ export function Field({
 }
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`${inputBase} ${props.className ?? ''}`} />;
+  return (
+    <input {...props} className={`${inputBase} ${width(props.className)} ${props.className ?? ''}`} />
+  );
 }
 
 export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={`${inputBase} ${props.className ?? ''}`} />;
+  return (
+    <textarea
+      {...props}
+      className={`${inputBase} ${width(props.className)} ${props.className ?? ''}`}
+    />
+  );
 }
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} className={`${inputBase} ${props.className ?? ''}`} />;
+  return (
+    <select
+      {...props}
+      className={`${inputBase} ${width(props.className)} ${props.className ?? ''}`}
+    />
+  );
 }
 
 export function Button({
