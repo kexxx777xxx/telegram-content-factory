@@ -438,7 +438,7 @@ describe('batch reaches the buffer at all', () => {
    * The defect this pins down: eligibility for the batch tier is decided from
    * the slack left before the slot, but the check ran inside the generation
    * job — which the planner scheduled for `leadTimeMinutes` (3h) before that
-   * slot. Three hours of slack against a 26-hour threshold is always "no", so
+   * slot. Three hours of slack against the threshold is always "no", so
    * batching for post text never happened once on a buffered project.
    */
   async function makeBatchKey(batchEnabled: boolean) {
@@ -464,8 +464,8 @@ describe('batch reaches the buffer at all', () => {
   it('starts far-off posts immediately when the key can batch', async () => {
     await ensureDefaultPrompts();
     await makeBatchKey(true);
-    // Seven days of buffer: every slot past the first is well over the
-    // 26-hour threshold the batch tier needs.
+    // Seven daily slots: every one past the first is well over the threshold
+    // the batch tier needs.
     const project = await makeProject({ postsBuffer: 7, leadTimeMinutes: 180, status: 'active' });
     await ensureDefaultChains();
 
@@ -480,6 +480,31 @@ describe('batch reaches the buffer at all', () => {
     expect(waitMinutes).toBeLessThan(16);
     // And well before the batch window would have closed.
     expect(job!.runAfter.getTime()).toBeLessThan(Date.now() + BATCH_MIN_SLACK_MS);
+  });
+
+  it('щогодинний розклад із малим буфером теж дотягується до batch', async () => {
+    /*
+     * Той самий дефект, але з боку, який жоден тест не ловив: поріг у 26 годин
+     * перевищував увесь горизонт планування. Буфер створює рівно `postsBuffer`
+     * слотів, тож на розкладі «щогодини» з буфером 20 найдальший слот — за 20
+     * годин, і жоден пост ніколи не проходив умову. Тут перевіряється не число,
+     * а те, що воно лишається меншим за реальний горизонт буфера.
+     */
+    await ensureDefaultPrompts();
+    await makeBatchKey(true);
+    const project = await makeProject({
+      postsBuffer: 20,
+      leadTimeMinutes: 180,
+      status: 'active',
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
+    });
+    await ensureDefaultChains();
+
+    await planTick();
+
+    const job = await firstGenerateJob(project.id);
+    expect(job).toBeDefined();
+    expect((job!.runAfter.getTime() - Date.now()) / 60_000).toBeLessThan(16);
   });
 
   it('keeps the lead time when the project turned batch off', async () => {
