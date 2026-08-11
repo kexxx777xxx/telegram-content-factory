@@ -368,14 +368,16 @@ async function batchedTopics(
   const submitted = await submitBatch({
     action: 'topics',
     projectId,
-    variables,
+    // Поповнення банку — один запит на проєкт: теми просяться пачкою всередині
+    // однієї відповіді, тож ділити їх на кілька запитів нема чого.
+    items: [{ postId: null, variables }],
     responseSchema: TOPICS_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
     // A bank refill that has not arrived in two days is not worth waiting for;
     // by then the threshold has almost certainly triggered again.
     deadline: new Date(Date.now() + 2 * 24 * 3600_000),
   });
 
-  if (submitted) return 'waiting';
+  if (submitted.length > 0) return 'waiting';
   return project.batchMode === 'batch_only' ? 'blocked' : null;
 }
 

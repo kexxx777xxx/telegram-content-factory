@@ -472,6 +472,13 @@ export const batchJobs = pgTable(
     model: text('model').notNull(),
     /** Vendor job name; the handle for polling and cancelling. */
     providerName: text('provider_name').notNull(),
+    /**
+     * Місце цього поста в замовленні. Одне замовлення везе запити кількох
+     * постів — у batch платять за запит, тож окрема джоба на кожен пост була б
+     * тією ж ціною при більшій кількості звернень. Відповіді повертаються в
+     * порядку запитів, і цей індекс — єдине, що зв'язує відповідь із постом.
+     */
+    requestIndex: integer('request_index').notNull().default(0),
     state: batchStateEnum('state').notNull().default('pending'),
     promptId: uuid('prompt_id'),
     promptVersion: integer('prompt_version'),

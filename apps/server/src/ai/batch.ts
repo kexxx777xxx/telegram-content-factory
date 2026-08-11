@@ -1,7 +1,7 @@
 import type { AiAction } from '@tcf/shared';
-import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, isNotNull, lt, notExists, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { batchJobs, projects, type BatchJob } from '../db/schema.js';
+import { batchJobs, posts, projects, type BatchJob, type Post } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { record } from '../services/activityLog.js';
 import { resolveChain } from './chains.js';
@@ -87,11 +87,84 @@ export async function canBatch(projectId: string, action: AiAction): Promise<boo
   return key?.batchEnabled === true;
 }
 
+/**
+ * Скільки постів максимум їде в одному замовленні.
+ *
+ * Стеля не від провайдера, а від здорового глузду: одне замовлення на весь
+ * буфер означає, що збій одного замовлення лишає без тексту весь буфер одразу.
+ */
+export const BATCH_MAX_ITEMS = 20;
+
+/**
+ * Менше двох запитів — не замовлення.
+ *
+ * У batch платять за запит, а не за джобу, тож економія від одного запиту та
+ * сама, що й від двадцяти, — але чекати доводиться однаково. Якщо в буфері
+ * знайшовся лише один кандидат, це саме по собі сигнал: буфер замалий, розклад
+ * рідкий або пости вже розібрані. Такий пост іде звичайним викликом, а в
+ * режимі «лише batch» лишається чекати — і це видно в журналі.
+ */
+export const BATCH_MIN_ITEMS = 2;
+
+/**
+ * Пости, які варто покласти в одне замовлення разом із тим, що його викликав.
+ *
+ * Сусіди шукаються в тому ж проєкті й на тому ж кроці: у batch платять за
+ * запит, тож двадцять постів в одному замовленні коштують рівно як двадцять
+ * окремих, але це одне звернення і одне опитування замість двадцяти. Умови ті
+ * самі, за якими постом займеться його власна джоба, — тож нікого не
+ * «випереджаємо»: коли її черга дійде, вона знайде вже готову відповідь.
+ */
+export async function batchCandidates(input: {
+  projectId: string;
+  action: AiAction;
+  /** Скільки часу до слоту має лишатись, щоб чекати на дешевий тариф. */
+  minSlackMs: number;
+  /** `true` — потрібен уже готовий текст (крок ілюстрації), `false` — навпаки. */
+  needsText: boolean;
+  limit: number;
+}): Promise<Post[]> {
+  const notBatchedYet = notExists(
+    db
+      .select({ one: sql`1` })
+      .from(batchJobs)
+      .where(
+        and(
+          eq(batchJobs.postId, posts.id),
+          eq(batchJobs.action, input.action),
+          inArray(batchJobs.state, ['pending', 'succeeded']),
+        ),
+      ),
+  );
+
+  return db
+    .select()
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, input.projectId),
+        eq(posts.status, 'planned'),
+        isNotNull(posts.topicTitle),
+        input.needsText ? isNotNull(posts.textHtml) : isNull(posts.textHtml),
+        input.needsText ? isNull(posts.imagePath) : sql`true`,
+        gte(posts.scheduledAt, new Date(Date.now() + input.minSlackMs)),
+        notBatchedYet,
+      ),
+    )
+    .orderBy(asc(posts.scheduledAt))
+    .limit(input.limit);
+}
+
+/** Один пост усередині замовлення. */
+export interface BatchItem {
+  postId: string | null;
+  variables: Record<string, string | number | undefined>;
+}
+
 export interface BatchSubmitInput {
   action: AiAction;
   projectId: string;
-  postId?: string | null;
-  variables: Record<string, string | number | undefined>;
+  items: BatchItem[];
   responseSchema?: Record<string, unknown>;
   /** When the answer stops being useful. */
   deadline: Date;
@@ -103,70 +176,88 @@ export interface BatchSubmitInput {
  * Only the first step: fallbacks exist for when a model is unavailable *now*,
  * and a batch job that will not be read for a day has no such moment to react
  * to. If it fails, the synchronous path walks the whole chain as usual.
+ *
+ * Одне замовлення везе запити кількох постів: ціна рахується за запит, тож
+ * двадцять окремих джоб коштували б рівно стільки ж, але це двадцять звернень
+ * до провайдера, двадцять опитувань кожні чверть години і двадцять способів
+ * щось загубити. Рядок у `batch_jobs` лишається на кожен пост — його
+ * `request_index` і зв'язує пост із його відповіддю.
  */
-export async function submitBatch(input: BatchSubmitInput): Promise<BatchJob | null> {
+export async function submitBatch(input: BatchSubmitInput): Promise<BatchJob[]> {
+  if (input.items.length === 0) return [];
+
   const chain = await resolveChain(input.action, input.projectId);
   const step = chain?.steps[0];
-  if (!step) return null;
+  if (!step) return [];
 
   const provider = providers[step.provider];
-  if (!provider?.submitBatch) return null;
+  if (!provider?.submitBatch) return [];
 
   const key = await resolveKey(input.projectId, step.provider, input.action);
-  if (!key || !key.batchEnabled) return null;
+  if (!key || !key.batchEnabled) return [];
 
   const prompt = await resolvePrompt(input.action, input.projectId, step.model, step.promptId);
-  const rendered = renderPrompt(prompt.body, input.variables);
+  const items = input.items.slice(0, BATCH_MAX_ITEMS);
 
   try {
-    const handle = await provider.submitBatch(key.secret, {
-      model: step.model,
-      prompt: rendered,
-      temperature: step.params.temperature,
-      maxOutputTokens: step.params.maxOutputTokens,
-      thinkingBudget: step.params.thinkingBudget,
-      responseSchema: input.responseSchema,
-    });
-
-    const [row] = await db
-      .insert(batchJobs)
-      .values({
-        projectId: input.projectId,
-        postId: input.postId ?? null,
-        apiKeyId: key.id,
-        action: input.action,
+    const handle = await provider.submitBatch(
+      key.secret,
+      items.map((item) => ({
         model: step.model,
-        providerName: handle.name,
-        state: handle.state,
-        promptId: prompt.id === 'builtin' ? null : prompt.id,
-        promptVersion: prompt.version,
-        deadline: input.deadline,
-      })
+        prompt: renderPrompt(prompt.body, item.variables),
+        temperature: step.params.temperature,
+        maxOutputTokens: step.params.maxOutputTokens,
+        thinkingBudget: step.params.thinkingBudget,
+        responseSchema: input.responseSchema,
+      })),
+    );
+
+    const rows = await db
+      .insert(batchJobs)
+      .values(
+        items.map((item, index) => ({
+          projectId: input.projectId,
+          postId: item.postId ?? null,
+          apiKeyId: key.id,
+          action: input.action,
+          model: step.model,
+          providerName: handle.name,
+          requestIndex: index,
+          state: handle.state,
+          promptId: prompt.id === 'builtin' ? null : prompt.id,
+          promptVersion: prompt.version,
+          deadline: input.deadline,
+        })),
+      )
       .returning();
 
-    if (row) {
-      await record({
-        projectId: input.projectId,
-        postId: input.postId ?? null,
-        kind: 'note',
+    await record({
+      projectId: input.projectId,
+      postId: items.length === 1 ? (items[0]?.postId ?? null) : null,
+      kind: 'note',
+      action: input.action,
+      model: step.model,
+      keyLabel: key.label,
+      source: 'auto',
+      message: `Відправлено в batch (−50% ціни, до 24 год), запитів: ${items.length} — ${handle.name}`,
+    });
+    logger.info(
+      {
+        project_id: input.projectId,
         action: input.action,
-        model: step.model,
-        keyLabel: key.label,
-        source: 'auto',
-        message: `Відправлено в batch (−50% ціни, до 24 год): ${handle.name}`,
-      });
-      logger.info(
-        { project_id: input.projectId, action: input.action, name: handle.name },
-        'batch submitted',
-      );
-    }
-    return row ?? null;
+        name: handle.name,
+        requests: items.length,
+      },
+      'batch submitted',
+    );
+
+    return rows;
   } catch (err) {
     // Batch is an optimisation. A key without the paid tier, a model that does
     // not support it — every such failure must fall through to the normal call
     // rather than cost the project its post.
     logger.warn({ err, action: input.action }, 'batch submit failed, falling back to sync');
-    return null;
+    return [];
   }
 }
 
@@ -194,38 +285,67 @@ export async function collectBatch(jobId: string): Promise<BatchOutcome | null> 
   const result = await provider.pollBatch(key, job.providerName);
   if (result.state === 'pending') return { state: 'pending', job };
 
-  const [updated] = await db
-    .update(batchJobs)
-    .set({
-      state: result.state,
-      resultText: result.text ?? null,
-      error: result.error ?? null,
-      inputTokens: result.usage?.inputTokens ?? null,
-      outputTokens: result.usage?.outputTokens ?? null,
-      updatedAt: new Date(),
-    })
-    .where(eq(batchJobs.id, job.id))
-    .returning();
+  /*
+   * Замовлення одне на кілька постів, тож одне опитування закриває їх усі.
+   * Інакше кожен пост ходив би до провайдера сам і питав про той самий стан —
+   * двадцять запитів кожні чверть години замість одного.
+   */
+  const siblings = await db
+    .select()
+    .from(batchJobs)
+    .where(and(eq(batchJobs.providerName, job.providerName), eq(batchJobs.state, 'pending')));
 
-  const final = updated ?? job;
+  let mine: BatchOutcome | null = null;
 
-  await record({
-    projectId: job.projectId,
-    postId: job.postId,
-    kind: 'note',
-    action: job.action,
-    model: job.model,
-    source: 'auto',
-    message:
-      result.state === 'succeeded'
-        ? `Batch завершився за ${job.model}`
-        : `Batch завершився невдало (${result.state}): ${result.error ?? 'без деталей'}`,
-    inputTokens: result.usage?.inputTokens,
-    outputTokens: result.usage?.outputTokens,
-    ok: result.state === 'succeeded',
-  });
+  for (const row of siblings) {
+    const item = result.items[row.requestIndex];
+    // Відповіді на цей запит немає — для цього поста замовлення не вдалося,
+    // хай навіть сусідні відповіді прийшли.
+    const state = result.state === 'succeeded' && item && !item.error ? 'succeeded' : 'failed';
+    const error = item?.error ?? result.error ?? (item ? null : 'Відповіді на цей запит немає');
 
-  return { state: result.state, text: result.text, image: result.image, job: final };
+    const [updated] = await db
+      .update(batchJobs)
+      .set({
+        state: result.state === 'succeeded' ? state : result.state,
+        resultText: item?.text ?? null,
+        error: state === 'succeeded' ? null : error,
+        inputTokens: item?.usage?.inputTokens ?? null,
+        outputTokens: item?.usage?.outputTokens ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(batchJobs.id, row.id))
+      .returning();
+
+    const final = updated ?? row;
+
+    await record({
+      projectId: row.projectId,
+      postId: row.postId,
+      kind: 'note',
+      action: row.action,
+      model: row.model,
+      source: 'auto',
+      message:
+        state === 'succeeded'
+          ? `Batch завершився за ${row.model}`
+          : `Batch завершився невдало (${result.state}): ${error ?? 'без деталей'}`,
+      inputTokens: item?.usage?.inputTokens,
+      outputTokens: item?.usage?.outputTokens,
+      ok: state === 'succeeded',
+    });
+
+    if (row.id === job.id) {
+      mine = {
+        state: final.state,
+        text: item?.text,
+        image: item?.image,
+        job: final,
+      };
+    }
+  }
+
+  return mine ?? { state: 'failed', job };
 }
 
 /** The pending job for this post and action, if one was submitted earlier. */

@@ -103,11 +103,22 @@ export interface LlmBatchHandle {
 
 export type LlmBatchState = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'expired';
 
-export interface LlmBatchResult extends LlmBatchHandle {
+/** Відповідь на один запит усередині замовлення. */
+export interface LlmBatchItem {
   text?: string;
   /** Set when the model answered with an image rather than prose. */
   image?: { data: Buffer; mimeType: string };
   usage?: LlmUsage;
+  error?: string;
+}
+
+export interface LlmBatchResult extends LlmBatchHandle {
+  /**
+   * По одному на кожен запит замовлення, у тому ж порядку, у якому їх
+   * відправили. Порядок — єдине, що зв'язує відповідь із постом, тому індекс
+   * запиту зберігається в рядку `batch_jobs`.
+   */
+  items: LlmBatchItem[];
   error?: string;
 }
 
@@ -118,7 +129,8 @@ export interface LlmProvider {
   generateImage?(apiKey: string, request: LlmImageRequest): Promise<LlmImageResult>;
   listModels(apiKey: string): Promise<LlmModelInfo[]>;
   /** Absent when the provider has no batch tier. */
-  submitBatch?(apiKey: string, request: LlmGenerateRequest): Promise<LlmBatchHandle>;
+  /** Одне замовлення на кілька запитів: у batch платять за запит, не за джобу. */
+  submitBatch?(apiKey: string, requests: LlmGenerateRequest[]): Promise<LlmBatchHandle>;
   pollBatch?(apiKey: string, name: string): Promise<LlmBatchResult>;
   cancelBatch?(apiKey: string, name: string): Promise<void>;
 }

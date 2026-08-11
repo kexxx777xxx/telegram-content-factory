@@ -147,37 +147,44 @@ export class GeminiProvider implements LlmProvider {
    * it later. Blocking a worker for hours would defeat the point of having a
    * queue at all.
    */
-  async submitBatch(apiKey: string, request: LlmGenerateRequest): Promise<LlmBatchHandle> {
+  async submitBatch(apiKey: string, requests: LlmGenerateRequest[]): Promise<LlmBatchHandle> {
     const ai = new GoogleGenAI({ apiKey });
+    const first = requests[0];
+    if (!first) throw new LlmError('invalid', 'Batch без жодного запиту');
 
-    const config: Record<string, unknown> = {};
-    if (request.temperature !== undefined) config.temperature = request.temperature;
-    if (request.maxOutputTokens !== undefined) config.maxOutputTokens = request.maxOutputTokens;
-    if (request.thinkingBudget !== undefined) {
-      config.thinkingConfig = { thinkingBudget: request.thinkingBudget };
-    }
-    if (request.responseSchema) {
-      config.responseMimeType = 'application/json';
-      config.responseSchema = request.responseSchema;
-    }
+    const configOf = (request: LlmGenerateRequest): Record<string, unknown> => {
+      const config: Record<string, unknown> = {};
+      if (request.temperature !== undefined) config.temperature = request.temperature;
+      if (request.maxOutputTokens !== undefined) config.maxOutputTokens = request.maxOutputTokens;
+      if (request.thinkingBudget !== undefined) {
+        config.thinkingConfig = { thinkingBudget: request.thinkingBudget };
+      }
+      if (request.responseSchema) {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = request.responseSchema;
+      }
+      return config;
+    };
 
     try {
       const job = await ai.batches.create({
-        model: request.model,
-        src: [
-          {
+        // Модель у замовлення одна: усі запити тут — один крок одного ланцюжка.
+        model: first.model,
+        src: requests.map((request) => {
+          const config = configOf(request);
+          return {
             contents: [{ parts: [{ text: request.prompt }], role: 'user' }],
             ...(Object.keys(config).length > 0 ? { config } : {}),
-          },
-        ],
-        config: { displayName: `tcf-${request.model}-${Date.now()}` },
+          };
+        }),
+        config: { displayName: `tcf-${first.model}-${Date.now()}` },
       });
 
       const name = job.name ?? '';
       if (!name) throw new LlmError('server', 'Batch-джоба створена без імені');
       return { name, state: mapBatchState(job.state) };
     } catch (err) {
-      throw classify(err, request.model);
+      throw classify(err, first.model);
     }
   }
 
@@ -188,44 +195,50 @@ export class GeminiProvider implements LlmProvider {
       const job = await ai.batches.get({ name });
       const state = mapBatchState(job.state);
       if (state !== 'succeeded') {
-        return { name, state, error: job.error?.message };
+        return { name, state, items: [], error: job.error?.message };
       }
 
       const responses = job.dest?.inlinedResponses ?? [];
-      const first = responses[0];
-      if (!first) return { name, state: 'failed', error: 'Batch завершився без відповідей' };
-      if (first.error) return { name, state: 'failed', error: String(first.error.message ?? first.error) };
+      if (responses.length === 0) {
+        return { name, state: 'failed', items: [], error: 'Batch завершився без відповідей' };
+      }
 
-      const response = first.response;
-      const parts = response?.candidates?.[0]?.content?.parts ?? [];
-      const inline = parts.find((part) => part.inlineData?.data);
+      // Порядок відповідей повторює порядок запитів — саме на цьому тримається
+      // прив'язка відповіді до поста через `request_index`.
+      const items = responses.map((entry) => {
+        if (entry.error) return { error: String(entry.error.message ?? entry.error) };
 
-      /*
-       * Text is assembled from the parts rather than read off `response.text`.
-       * That accessor is a getter on the SDK's response class, and what comes
-       * back inside a batch is a plain object — the getter is simply absent, so
-       * reading it yields undefined and the job looks like it answered nothing.
-       */
-      const text = parts
-        .map((part) => part.text ?? '')
-        .join('')
-        .trim();
+        const response = entry.response;
+        const parts = response?.candidates?.[0]?.content?.parts ?? [];
+        const inline = parts.find((part) => part.inlineData?.data);
 
-      return {
-        name,
-        state: 'succeeded',
-        text: text || undefined,
-        image: inline?.inlineData?.data
-          ? {
-              data: Buffer.from(inline.inlineData.data, 'base64'),
-              mimeType: inline.inlineData.mimeType ?? 'image/png',
-            }
-          : undefined,
-        usage: {
-          inputTokens: response?.usageMetadata?.promptTokenCount ?? 0,
-          outputTokens: response?.usageMetadata?.candidatesTokenCount ?? 0,
-        },
-      };
+        /*
+         * Text is assembled from the parts rather than read off `response.text`.
+         * That accessor is a getter on the SDK's response class, and what comes
+         * back inside a batch is a plain object — the getter is simply absent, so
+         * reading it yields undefined and the job looks like it answered nothing.
+         */
+        const text = parts
+          .map((part) => part.text ?? '')
+          .join('')
+          .trim();
+
+        return {
+          text: text || undefined,
+          image: inline?.inlineData?.data
+            ? {
+                data: Buffer.from(inline.inlineData.data, 'base64'),
+                mimeType: inline.inlineData.mimeType ?? 'image/png',
+              }
+            : undefined,
+          usage: {
+            inputTokens: response?.usageMetadata?.promptTokenCount ?? 0,
+            outputTokens: response?.usageMetadata?.candidatesTokenCount ?? 0,
+          },
+        };
+      });
+
+      return { name, state: 'succeeded', items };
     } catch (err) {
       throw classify(err, name);
     }

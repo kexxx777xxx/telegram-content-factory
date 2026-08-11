@@ -127,6 +127,13 @@
       "when": 1786046477174,
       "tag": "0017_nifty_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786436296982,
+      "tag": "0018_violet_firelord",
+      "breakpoints": true
     }
   ]
 }

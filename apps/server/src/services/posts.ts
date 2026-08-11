@@ -10,7 +10,10 @@ import { sendApprovalCard } from '../telegram/adminBot.js';
 import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
 import {
   BATCH_DEADLINE_MARGIN_MS,
+  BATCH_MAX_ITEMS,
+  BATCH_MIN_ITEMS,
   BATCH_MIN_SLACK_MS,
+  batchCandidates,
   collectBatch,
   dropBatch,
   findBatch,
@@ -34,6 +37,7 @@ async function batchedText(
   project: Project,
   variables: Record<string, string | number | undefined>,
 ): Promise<ChainRunResult | 'waiting' | 'blocked' | null> {
+  const log = logger.child({ post_id: post.id, project_id: project.id });
   /*
    * No slot means nobody is waiting on a schedule — which sounds like the ideal
    * batch candidate but is the opposite. A post without a slot is being run by
@@ -75,17 +79,49 @@ async function batchedText(
 
   if (project.batchMode === 'off') return null;
 
+  /*
+   * Замовлення збирається на весь буфер, а не на цей пост: у batch платять за
+   * запит, тож двадцять постів в одному замовленні коштують як двадцять
+   * окремих, але це одне звернення і одне опитування. Сусідів шукаємо за тими
+   * самими умовами, за якими сюди дійшов цей пост, — коли черга дійде до них,
+   * вони знайдуть готову відповідь замість того, щоб замовляти ще раз.
+   */
+  const candidates = await batchCandidates({
+    projectId: project.id,
+    action: 'post_text',
+    minSlackMs: BATCH_MIN_SLACK_MS,
+    needsText: false,
+    limit: BATCH_MAX_ITEMS,
+  });
+
+  /*
+   * Один кандидат — не замовлення. Економія від одного запиту та сама, що й від
+   * двадцяти, а чекати доводиться однаково; та й сам факт, що в буфері лишився
+   * один придатний пост, каже, що буфер замалий для дешевого тарифу. Такий пост
+   * іде звичайним викликом, а в режимі «лише batch» це видно в журналі.
+   */
+  if (candidates.length < BATCH_MIN_ITEMS) {
+    log.info(
+      { candidates: candidates.length },
+      'too few posts ready for one batch order, generating synchronously',
+    );
+    return null;
+  }
+
+  const shared = await projectVariables(project);
   const submitted = await submitBatch({
     action: 'post_text',
     projectId: project.id,
-    postId: post.id,
-    variables,
-    // Stop waiting well before the slot: the illustration still has to be made
-    // after the text arrives.
-    deadline: new Date(slot.getTime() - BATCH_DEADLINE_MARGIN_MS),
+    items: candidates.map((candidate) => ({
+      postId: candidate.id,
+      variables: { ...shared, topic: candidate.topicTitle ?? '' },
+    })),
+    // Дедлайн — за найближчим слотом у замовленні: воно приходить цілком, тож
+    // корисним має лишитись для найтерміновішого з постів.
+    deadline: new Date(earliestSlot(candidates, slot).getTime() - BATCH_DEADLINE_MARGIN_MS),
   });
 
-  if (submitted) return 'waiting';
+  if (submitted.length > 0) return 'waiting';
 
   /*
    * «Лише batch» is a statement about price, and generating at full price is
@@ -93,6 +129,12 @@ async function batchedText(
    * the cost — the miss policy then decides what happens when it arrives.
    */
   return project.batchMode === 'batch_only' ? 'blocked' : null;
+}
+
+/** Найраніший слот у замовленні — за ним і рахується, доки відповідь корисна. */
+function earliestSlot(candidates: Post[], fallback: Date): Date {
+  const slots = candidates.map((c) => c.scheduledAt).filter((s): s is Date => s !== null);
+  return slots.length > 0 ? new Date(Math.min(...slots.map((s) => s.getTime()))) : fallback;
 }
 
 /** Statuses a generation job may legitimately start from. */

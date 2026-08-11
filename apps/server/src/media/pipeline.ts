@@ -4,10 +4,14 @@ import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js
 import {
   BATCH_IMAGE_MARGIN_MS,
   BATCH_IMAGE_MIN_SLACK_MS,
+  BATCH_MAX_ITEMS,
+  BATCH_MIN_ITEMS,
+  batchCandidates,
   collectBatch,
   dropBatch,
   findBatch,
   submitBatch,
+  type BatchItem,
 } from '../ai/batch.js';
 import { resolveChain } from '../ai/chains.js';
 import { providers } from '../ai/gemini.js';
@@ -17,7 +21,16 @@ import { projectVariables } from '../prompts/variables.js';
 import { renderPrompt, resolvePrompt } from '../prompts/resolve.js';
 import { acquire, openCircuit, recordUsage } from '../ai/rateLimiter.js';
 import { LlmError } from '../ai/provider.js';
-import type { Project } from '../db/schema.js';
+import type { Post, Project } from '../db/schema.js';
+
+/**
+ * Скільки постів іде в одне замовлення на малювання.
+ *
+ * Менше, ніж для тексту: кожному сусідові спершу треба скласти опис картинки, а
+ * це окремий синхронний виклик. Двадцять описів перетворили б одну джобу на
+ * довгий забіг, під час якого решта черги стоїть.
+ */
+const BATCH_IMAGE_GROUP_LIMIT = 5;
 import { logger } from '../logger.js';
 import { writeStagedImage } from './staging.js';
 import { fallbackSvg } from './svg/fallback.js';
@@ -78,7 +91,9 @@ async function batchedIllustration(
   post: ImagePost,
   project: Project,
   action: AiAction,
-  variables: Record<string, string | number | undefined>,
+  /** Змінні для сусіда по замовленню; для малювання це ще й окремий виклик. */
+  buildVariables: (candidate: Post) => Promise<Record<string, string | number | undefined>>,
+  limit: number,
 ): Promise<
   { text?: string; image?: { data: Buffer; mimeType: string }; model: string } | 'waiting' | null
 > {
@@ -101,15 +116,52 @@ async function batchedIllustration(
   if (!slot || slot.getTime() - Date.now() < BATCH_IMAGE_MIN_SLACK_MS) return null;
   if (project.batchMode === 'off') return null;
 
+  /*
+   * Те саме, що з текстом: одне замовлення на всі пости буфера, яким уже є що
+   * малювати. Ціна за запит однакова, а звернень і опитувань — одне.
+   */
+  const candidates = await batchCandidates({
+    projectId: project.id,
+    action,
+    minSlackMs: BATCH_IMAGE_MIN_SLACK_MS,
+    needsText: true,
+    limit,
+  });
+
+  if (candidates.length < BATCH_MIN_ITEMS) {
+    logger.info(
+      { project_id: project.id, action, candidates: candidates.length },
+      'too few posts ready for one illustration batch, drawing synchronously',
+    );
+    return null;
+  }
+
+  const items: BatchItem[] = [];
+  for (const candidate of candidates) {
+    try {
+      items.push({ postId: candidate.id, variables: await buildVariables(candidate) });
+    } catch (err) {
+      // Сусід, для якого не вдалось скласти запит, просто не їде в замовленні:
+      // його власна джоба зробить усе звичайним шляхом.
+      logger.warn({ err, post_id: candidate.id }, 'skipping post in illustration batch');
+    }
+  }
+
+  if (items.length < BATCH_MIN_ITEMS) return null;
+
+  const earliest = candidates
+    .map((c) => c.scheduledAt)
+    .filter((s): s is Date => s !== null)
+    .reduce((min, s) => (s < min ? s : min), slot);
+
   const submitted = await submitBatch({
     action,
     projectId: project.id,
-    postId: post.id,
-    variables,
-    deadline: new Date(slot.getTime() - BATCH_IMAGE_MARGIN_MS),
+    items,
+    deadline: new Date(earliest.getTime() - BATCH_IMAGE_MARGIN_MS),
   });
 
-  return submitted ? 'waiting' : null;
+  return submitted.length > 0 ? 'waiting' : null;
 }
 
 /**
@@ -148,7 +200,13 @@ async function generateWithSvg(
    * текст поста. Санітайзер і ремонт лишаються синхронними: вони працюють уже
    * над готовою відповіддю і другого замовлення не потребують.
    */
-  const cheap = await batchedIllustration(post, project, 'svg', variables);
+  const cheap = await batchedIllustration(
+    post,
+    project,
+    'svg',
+    async (candidate) => ({ ...(await projectVariables(project)), topic: candidate.topicTitle ?? 'схема' }),
+    BATCH_MAX_ITEMS,
+  );
   if (cheap === 'waiting') return 'waiting';
 
   try {
@@ -265,7 +323,34 @@ async function generateWithImageModel(
    * короткий текстовий виклик, і чекати через нього другу чергу означало б
    * подвоїти очікування заради копійок.
    */
-  const cheap = await batchedIllustration(post, project, 'image', drawVariables);
+  const cheap = await batchedIllustration(
+    post,
+    project,
+    'image',
+    async (candidate) =>
+      candidate.id === post.id
+        ? drawVariables
+        : {
+            ...(await projectVariables(project)),
+            topic: candidate.topicTitle ?? '',
+            imagePrompt: (
+              await runChain({
+                action: 'image_prompt',
+                projectId: project.id,
+                postId: candidate.id,
+                variables: {
+                  ...(await projectVariables(project)),
+                  topic: candidate.topicTitle ?? '',
+                  postText: stripTags(candidate.textHtml ?? candidate.topicTitle ?? ''),
+                },
+              })
+            ).text,
+          },
+    // Менша пачка, ніж для тексту: опис картинки для кожного сусіда — це
+    // окремий синхронний виклик, і двадцять таких перетворили б одну джобу на
+    // довгий забіг.
+    BATCH_IMAGE_GROUP_LIMIT,
+  );
   if (cheap === 'waiting') return 'waiting';
 
   if (cheap?.image) {

@@ -23,7 +23,14 @@ import { ensureDefaultChains } from '../src/ai/chains.js';
 import { planTick } from '../src/scheduler/planner.js';
 import { launchPost, launchProject, NotLaunchableError } from '../src/services/publishNow.js';
 import { logEnabled, postLog, projectLog, pruneLogs, record } from '../src/services/activityLog.js';
-import { abandonExpired, BATCH_MIN_SLACK_MS, submitBatch } from '../src/ai/batch.js';
+import {
+  abandonExpired,
+  BATCH_MAX_ITEMS,
+  BATCH_MIN_ITEMS,
+  BATCH_MIN_SLACK_MS,
+  batchCandidates,
+  submitBatch,
+} from '../src/ai/batch.js';
 import {
   ensureDefaultPrompts,
   renderPrompt,
@@ -260,14 +267,91 @@ describe('batch tier', () => {
     const submitted = await submitBatch({
       action: 'topics',
       projectId: project.id,
-      variables: {},
+      items: [{ postId: null, variables: {} }],
       deadline: new Date(Date.now() + 3600_000),
     });
 
     // Falling back to the normal call is the only safe behaviour: batch is a
     // paid-tier feature and submitting would fail at the vendor.
-    expect(submitted).toBeNull();
+    expect(submitted).toEqual([]);
     expect(await db.select().from(batchJobs)).toHaveLength(0);
+  });
+
+  it('збирає в одне замовлення всі пости буфера, а не по одному', async () => {
+    /*
+     * У batch платять за запит, не за джобу: двадцять постів в одному
+     * замовленні коштують як двадцять окремих, але це одне звернення і одне
+     * опитування. Тому кандидати шукаються по всьому буферу — і саме тут
+     * відсіюються ті, кому це не підходить.
+     */
+    const project = await makeProject();
+    const far = new Date(Date.now() + 8 * 3600_000);
+
+    const [first] = await db
+      .insert(posts)
+      .values([
+        { projectId: project.id, status: 'planned', scheduledAt: far, topicTitle: 'Раз' },
+        {
+          projectId: project.id,
+          status: 'planned',
+          scheduledAt: new Date(far.getTime() + 3600_000),
+          topicTitle: 'Два',
+        },
+        // Слот за півгодини — чекати на дешевий тариф уже нікуди.
+        {
+          projectId: project.id,
+          status: 'planned',
+          scheduledAt: new Date(Date.now() + 30 * 60_000),
+          topicTitle: 'Близький',
+        },
+        // Текст уже є — цей крок для нього пройдено.
+        {
+          projectId: project.id,
+          status: 'planned',
+          scheduledAt: new Date(far.getTime() + 2 * 3600_000),
+          topicTitle: 'Готовий',
+          textHtml: '<b>є</b>',
+        },
+      ])
+      .returning();
+
+    const candidates = await batchCandidates({
+      projectId: project.id,
+      action: 'post_text',
+      minSlackMs: BATCH_MIN_SLACK_MS,
+      needsText: false,
+      limit: BATCH_MAX_ITEMS,
+    });
+
+    expect(candidates.map((c) => c.topicTitle)).toEqual(['Раз', 'Два']);
+
+    // Пост, який уже в чужому замовленні, не потрапляє в наступне: інакше та
+    // сама відповідь була б замовлена і оплачена двічі.
+    const [key] = await db
+      .insert(apiKeys)
+      .values({ provider: 'gemini', label: 'p', secretEnc: encryptSecret('s'), batchEnabled: true })
+      .returning();
+    await db.insert(batchJobs).values({
+      projectId: project.id,
+      postId: first!.id,
+      apiKeyId: key!.id,
+      action: 'post_text',
+      model: 'gemini-3.5-flash',
+      providerName: 'batches/x',
+      state: 'pending',
+      deadline: far,
+    });
+
+    const after = await batchCandidates({
+      projectId: project.id,
+      action: 'post_text',
+      minSlackMs: BATCH_MIN_SLACK_MS,
+      needsText: false,
+      limit: BATCH_MAX_ITEMS,
+    });
+    expect(after.map((c) => c.topicTitle)).toEqual(['Два']);
+    // А один кандидат — це вже не замовлення.
+    expect(after.length).toBeLessThan(BATCH_MIN_ITEMS);
   });
 
   it('abandons a job past its deadline so the slot can be generated normally', async () => {
