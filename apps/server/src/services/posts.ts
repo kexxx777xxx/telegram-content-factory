@@ -179,63 +179,134 @@ export async function generatePostText(
    * It also keeps the post recoverable — a stuck-generation reaper would have
    * nothing to reclaim here, because nothing is stuck.
    */
-  const batched = await batchedText(post, project, variables);
-  if (batched === 'waiting') return 'batched';
+  /*
+   * Невдача будь-якого кроку повертає пост у `planned`, щоб черга підхопила
+   * його чисто. Тема лишається на рядку — повтор бере її, а не спорожнює банк
+   * по одній спробі за раз.
+   */
+  const fail = async (err: unknown): Promise<never> => {
+    const terminal = err instanceof ChainMissingError;
+    await db
+      .update(posts)
+      .set({
+        status: terminal ? 'failed' : 'planned',
+        error: err instanceof Error ? err.message : String(err),
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, post.id));
 
-  if (batched === 'blocked') {
-    log.warn('batch-only project cannot batch this slot, generation skipped');
-    await record({
-      projectId: project.id,
-      postId: post.id,
-      kind: 'note',
-      action: 'post_text',
-      source: 'auto',
-      ok: false,
-      message:
-        'Режим «лише batch»: замовлення не прийнято (ключ без batch або провайдер відмовив), ' +
-        'тому синхронна генерація не запускалась',
-    });
-    return 'skipped';
-  }
+    throw err;
+  };
 
-  await db
-    .update(posts)
-    .set({ status: 'generating', error: null, updatedAt: new Date() })
-    .where(eq(posts.id, post.id));
+  /*
+   * Текст уже на рядку — отже, попередній захід зберіг його і припаркувався на
+   * замовленні ілюстрації. Генерувати вдруге не можна: це і зайвий виклик, і
+   * перезапис того, що вже могли поправити руками.
+   */
+  let textHtml = post.textHtml;
+  let textMeta: GenerationMeta | null = null;
 
-  try {
-    const result =
-      batched ??
-      (await runChain({
-        action: 'post_text',
+  if (!textHtml) {
+    const batched = await batchedText(post, project, variables);
+    if (batched === 'waiting') return 'batched';
+
+    if (batched === 'blocked') {
+      log.warn('batch-only project cannot batch this slot, generation skipped');
+      await record({
         projectId: project.id,
         postId: post.id,
-        variables,
-      }));
-
-    // The model was asked for a restricted tag set; this is what enforces it.
-    const clean = sanitizeTelegramHtml(result.text);
-    if (clean.removedTags.length > 0) {
-      log.info({ removedTags: clean.removedTags }, 'model returned markup outside the allowed set');
+        kind: 'note',
+        action: 'post_text',
+        source: 'auto',
+        ok: false,
+        message:
+          'Режим «лише batch»: замовлення не прийнято (ключ без batch або провайдер відмовив), ' +
+          'тому синхронна генерація не запускалась',
+      });
+      return 'skipped';
     }
 
+    await db
+      .update(posts)
+      .set({ status: 'generating', error: null, updatedAt: new Date() })
+      .where(eq(posts.id, post.id));
+
+    try {
+      const result =
+        batched ??
+        (await runChain({
+          action: 'post_text',
+          projectId: project.id,
+          postId: post.id,
+          variables,
+        }));
+
+      // The model was asked for a restricted tag set; this is what enforces it.
+      const clean = sanitizeTelegramHtml(result.text);
+      if (clean.removedTags.length > 0) {
+        log.info({ removedTags: clean.removedTags }, 'model returned markup outside the allowed set');
+      }
+
+      textHtml = clean.html;
+      textMeta = {
+        model: result.model,
+        promptId: result.promptId,
+        promptVersion: result.promptVersion,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        attempts: result.attempts.length,
+        generatedAt: new Date().toISOString(),
+        removedTags: clean.removedTags,
+        visibleLength: visibleLength(clean.html),
+      };
+
+      /*
+       * Текст лягає в базу до ілюстрації, а не разом із нею. Ілюстрація теж
+       * може поїхати в batch, і тоді джоба засинає на чверть години; без цього
+       * запису вона прокинулась би з порожнім постом і замовила текст удруге —
+       * за гроші й поверх уже написаного. Статус повертається в `planned` з тієї
+       * ж причини, з якої там стоїть текстовий batch: `generating` означає, що
+       * просто зараз працює модель, а пост у черзі на дешевий тариф — це не те.
+       */
+      await db
+        .update(posts)
+        .set({
+          textHtml,
+          status: 'planned',
+          generation: { ...(post.generation as GenerationMeta), ...textMeta },
+          error: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(posts.id, post.id));
+
+      await record({
+        projectId: project.id,
+        postId: post.id,
+        kind: 'generation_step',
+        action: 'post_text',
+        model: result.model,
+        source: 'auto',
+        message: `Текст готовий: ${visibleLength(clean.html)} символів, модель ${result.model}, промпт v${result.promptVersion}`,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+      });
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  try {
     // Image generation happens after the text so the image-model branch can
     // describe what the post actually says, not just its topic.
     const image = await generateImage(
-      { id: post.id, topicTitle, textHtml: clean.html },
+      { id: post.id, topicTitle, textHtml, scheduledAt: post.scheduledAt },
       project,
     );
+    if (image === 'waiting') return 'batched';
 
     const meta: GenerationMeta = {
-      model: result.model,
-      promptId: result.promptId,
-      promptVersion: result.promptVersion,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      attempts: result.attempts.length,
-      generatedAt: new Date().toISOString(),
-      removedTags: clean.removedTags,
-      visibleLength: visibleLength(clean.html),
+      ...(post.generation as GenerationMeta),
+      ...(textMeta ?? {}),
       imageKind: image?.kind ?? null,
       imageModel: image?.model ?? null,
       imageNotes: image?.notes ?? [],
@@ -244,7 +315,7 @@ export async function generatePostText(
     await db
       .update(posts)
       .set({
-        textHtml: clean.html,
+        textHtml,
         imagePath: image?.path ?? null,
         imageKind: image?.kind ?? null,
         // `svgSource` is kept only while the post is buffered; publishing clears it.
@@ -255,18 +326,6 @@ export async function generatePostText(
         updatedAt: new Date(),
       })
       .where(eq(posts.id, post.id));
-
-    await record({
-      projectId: project.id,
-      postId: post.id,
-      kind: 'generation_step',
-      action: 'post_text',
-      model: result.model,
-      source: 'auto',
-      message: `Текст готовий: ${visibleLength(clean.html)} символів, модель ${result.model}, промпт v${result.promptVersion}`,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-    });
 
     if (image) {
       await record({
@@ -285,12 +344,7 @@ export async function generatePostText(
     }
 
     log.info(
-      {
-        model: result.model,
-        chars: meta.visibleLength,
-        topic: topicTitle,
-        image: image?.kind ?? 'none',
-      },
+      { chars: meta.visibleLength, topic: topicTitle, image: image?.kind ?? 'none' },
       'post generated',
     );
 
@@ -304,21 +358,7 @@ export async function generatePostText(
 
     return 'generated';
   } catch (err) {
-    // Back to `planned` so the queue's own retry can pick it up cleanly. The
-    // subject stays on the row, so a retry reuses it instead of draining the
-    // bank one attempt at a time — which is now automatic, the subject being
-    // part of the post rather than a row it points at.
-    const terminal = err instanceof ChainMissingError;
-    await db
-      .update(posts)
-      .set({
-        status: terminal ? 'failed' : 'planned',
-        error: err instanceof Error ? err.message : String(err),
-        updatedAt: new Date(),
-      })
-      .where(eq(posts.id, post.id));
-
-    throw err;
+    return fail(err);
   }
 }
 

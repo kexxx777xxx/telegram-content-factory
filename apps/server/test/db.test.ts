@@ -35,7 +35,7 @@ import { projectVariables } from '../src/prompts/variables.js';
 import { COMMON_VARIABLES, promptVariables } from '@tcf/shared';
 import { forgetSettings, resolveStyle, saveSettings } from '../src/services/settings.js';
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
-import { listPosts, resetForRegeneration } from '../src/services/posts.js';
+import { generatePostText, listPosts, resetForRegeneration } from '../src/services/posts.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
 import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 import { saveActionConfig } from '../src/services/generationConfig.js';
@@ -540,6 +540,40 @@ describe('batch reaches the buffer at all', () => {
     expect(job).toBeDefined();
     // Nothing to gain by generating days early without the cheap tier.
     expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+});
+
+describe('повторний захід генерації', () => {
+  it('не генерує текст удруге, якщо він уже збережений', async () => {
+    /*
+     * Це те, на чому тримається batch для ілюстрації: текст зберігається до
+     * замовлення картинки, джоба паркується, і наступний її захід має піти
+     * одразу до ілюстрації. Якби він починав із тексту, парковка коштувала б
+     * другого виклику моделі поверх уже написаного.
+     *
+     * Мережі в тестах немає — тож будь-яке звернення до моделі тут просто
+     * впало б. Прохід без помилки і є доказом, що жодного виклику не сталось.
+     */
+    const project = await makeProject({ imageMode: 'none', publishMode: 'auto' });
+    const [post] = await db
+      .insert(posts)
+      .values({
+        projectId: project.id,
+        status: 'planned',
+        scheduledAt: new Date(Date.now() + 30 * 60_000),
+        topicTitle: 'Тема, яка вже має текст',
+        // Разом із хешем: без нього тема вважається невизначеною, і генерація
+        // піде по неї в банк.
+        normalizedHash: 'tema-yaka-vzhe-maye-tekst',
+        textHtml: '<b>Готовий текст</b>',
+      })
+      .returning();
+
+    expect(await generatePostText(post!.id)).toBe('generated');
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, post!.id));
+    expect(after!.status).toBe('ready');
+    expect(after!.textHtml).toBe('<b>Готовий текст</b>');
   });
 });
 

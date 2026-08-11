@@ -1,5 +1,14 @@
 import type { ImageMode } from '@tcf/shared';
+import type { AiAction } from '@tcf/shared';
 import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js';
+import {
+  BATCH_IMAGE_MARGIN_MS,
+  BATCH_IMAGE_MIN_SLACK_MS,
+  collectBatch,
+  dropBatch,
+  findBatch,
+  submitBatch,
+} from '../ai/batch.js';
 import { resolveChain } from '../ai/chains.js';
 import { providers } from '../ai/gemini.js';
 import { resolveKey } from '../ai/keys.js';
@@ -17,6 +26,15 @@ import { sanitizeSvg, SvgInvalidError } from './svg/sanitize.js';
 
 /** Long structured output needs more room than the prose default. */
 const SVG_TIMEOUT_MS = 120_000;
+
+/** Пост у тому обсязі, який потрібен ілюстрації. */
+export interface ImagePost {
+  id: string;
+  topicTitle: string | null;
+  textHtml: string | null;
+  /** Потрібен, щоб вирішити, чи лишається час на дешевий тариф. */
+  scheduledAt?: Date | null;
+}
 
 export interface ImageResult {
   path: string;
@@ -36,15 +54,62 @@ export interface ImageResult {
  * rendering problem — so a deterministic fallback closes the gap.
  */
 export async function generateImage(
-  post: { id: string; topicTitle: string | null; textHtml: string | null },
+  post: ImagePost,
   project: Project,
-): Promise<ImageResult | null> {
+): Promise<ImageResult | 'waiting' | null> {
   const mode: ImageMode = project.imageMode;
   if (mode === 'none') return null;
 
   return mode === 'image_model'
     ? generateWithImageModel(post, project)
     : generateWithSvg(post, project);
+}
+
+/**
+ * Замовлення ілюстрації на дешевому тарифі — або те, що з нього вийшло.
+ *
+ * Повертає `'waiting'`, поки відповіді немає: джоба паркується і повертається
+ * сюди ж за чверть години. `null` означає «дешево не вийшло, роби як завжди» —
+ * і це нормальний шлях, а не помилка: близький слот, вимкнений режим, ключ без
+ * batch. Ілюстрація довго була єдиним кроком, який завжди платив повну ціну,
+ * хоч і найдорожчий: текст і теми давно ходять сюди.
+ */
+async function batchedIllustration(
+  post: ImagePost,
+  project: Project,
+  action: AiAction,
+  variables: Record<string, string | number | undefined>,
+): Promise<
+  { text?: string; image?: { data: Buffer; mimeType: string }; model: string } | 'waiting' | null
+> {
+  const existing = await findBatch(post.id, action);
+  if (existing) {
+    const outcome = await collectBatch(existing.id);
+    if (outcome?.state === 'pending') return 'waiting';
+
+    await dropBatch(existing.id);
+    if (outcome?.state === 'succeeded' && (outcome.text || outcome.image)) {
+      // Модель береться з рядка замовлення: у журналі має стояти та, що
+      // справді малювала, а не перший крок ланцюжка на момент читання.
+      return { text: outcome.text, image: outcome.image, model: existing.model };
+    }
+    // Не вийшло — далі звичайний ланцюжок, слот важливіший за знижку.
+    return null;
+  }
+
+  const slot = post.scheduledAt;
+  if (!slot || slot.getTime() - Date.now() < BATCH_IMAGE_MIN_SLACK_MS) return null;
+  if (project.batchMode === 'off') return null;
+
+  const submitted = await submitBatch({
+    action,
+    projectId: project.id,
+    postId: post.id,
+    variables,
+    deadline: new Date(slot.getTime() - BATCH_IMAGE_MARGIN_MS),
+  });
+
+  return submitted ? 'waiting' : null;
 }
 
 /**
@@ -55,9 +120,9 @@ export async function generateImage(
  * error is far cheaper than a full regeneration.
  */
 async function generateWithSvg(
-  post: { id: string; topicTitle: string | null },
+  post: ImagePost,
   project: Project,
-): Promise<ImageResult> {
+): Promise<ImageResult | 'waiting'> {
   const log = logger.child({ post_id: post.id, project_id: project.id });
   const topic = post.topicTitle ?? 'схема';
   const notes: string[] = [];
@@ -76,16 +141,28 @@ async function generateWithSvg(
   let lastError: string | null = null;
   let lastSource: string | null = null;
 
+  const variables = { ...(await projectVariables(project)), topic };
+
+  /*
+   * SVG — це текстова генерація, тож на дешевий тариф вона йде так само, як
+   * текст поста. Санітайзер і ремонт лишаються синхронними: вони працюють уже
+   * над готовою відповіддю і другого замовлення не потребують.
+   */
+  const cheap = await batchedIllustration(post, project, 'svg', variables);
+  if (cheap === 'waiting') return 'waiting';
+
   try {
     attempts++;
-    const generated = await runChain({
-      action: 'svg',
-      projectId: project.id,
-      postId: post.id,
-      variables: { ...(await projectVariables(project)), topic },
-      // A schematic is ~4k output tokens; the default 60s budget is for prose.
-      timeoutMs: SVG_TIMEOUT_MS,
-    });
+    const generated = cheap?.text
+      ? { text: cheap.text, model: cheap.model as string | null }
+      : await runChain({
+          action: 'svg',
+          projectId: project.id,
+          postId: post.id,
+          variables,
+          // A schematic is ~4k output tokens; the default 60s budget is for prose.
+          timeoutMs: SVG_TIMEOUT_MS,
+        });
     lastSource = generated.text;
 
     try {
@@ -113,8 +190,7 @@ async function generateWithSvg(
         projectId: project.id,
         postId: post.id,
         variables: {
-          ...(await projectVariables(project)),
-          topic,
+          ...variables,
           error: lastError,
           svgSource: lastSource.slice(0, 12_000),
         },
@@ -148,9 +224,9 @@ async function generateWithSvg(
  * of quietly publishing the wrong aesthetic.
  */
 async function generateWithImageModel(
-  post: { id: string; textHtml: string | null; topicTitle: string | null },
+  post: ImagePost,
   project: Project,
-): Promise<ImageResult> {
+): Promise<ImageResult | 'waiting'> {
   const log = logger.child({ post_id: post.id, project_id: project.id });
   const notes: string[] = [];
 
@@ -177,12 +253,39 @@ async function generateWithImageModel(
    * («без тексту на картинці», «вертикальний кадр») — інакше таке доводилось
    * би вписувати в промпт опису й сподіватись, що модель його перекаже.
    */
-  const template = await resolvePrompt('image', project.id, null);
-  const drawPrompt = renderPrompt(template.body, {
+  const drawVariables = {
     ...(await projectVariables(project)),
     imagePrompt: promptResult.text,
     topic: post.topicTitle ?? '',
-  });
+  };
+
+  /*
+   * Малювання — найдорожчий виклик у пості, тож і найбільше виграє від
+   * половинної ціни. На batch іде саме воно, а не складання опису: опис — це
+   * короткий текстовий виклик, і чекати через нього другу чергу означало б
+   * подвоїти очікування заради копійок.
+   */
+  const cheap = await batchedIllustration(post, project, 'image', drawVariables);
+  if (cheap === 'waiting') return 'waiting';
+
+  if (cheap?.image) {
+    const png = await normaliseModelImage(cheap.image.data);
+    const path = await writeStagedImage(post.id, png.data, png.extension);
+    notes.push('намальовано на batch-тарифі (−50%)');
+    await record({
+      projectId: project.id,
+      postId: post.id,
+      kind: 'generation_step',
+      action: 'image',
+      model: cheap.model,
+      source: 'auto',
+      message: `Зображення намальовано моделлю ${cheap.model} на batch-тарифі, ${png.data.length} байт`,
+    });
+    return { path, kind: 'image_model', svgSource: null, model: cheap.model, attempts: 1, notes };
+  }
+
+  const template = await resolvePrompt('image', project.id, null);
+  const drawPrompt = renderPrompt(template.body, drawVariables);
 
   let lastError: LlmError | null = null;
 
