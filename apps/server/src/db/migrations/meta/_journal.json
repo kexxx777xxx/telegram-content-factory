@@ -134,6 +134,13 @@
       "when": 1786436296982,
       "tag": "0018_violet_firelord",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786436728218,
+      "tag": "0019_dear_exodus",
+      "breakpoints": true
     }
   ]
 }

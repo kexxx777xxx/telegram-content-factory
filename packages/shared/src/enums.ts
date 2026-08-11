@@ -31,7 +31,14 @@ export const BATCH_MODES = ['partial', 'batch_only', 'off'] as const;
 export type BatchMode = (typeof BATCH_MODES)[number];
 
 /** What to do when a slot arrives and the post is not ready. */
-export const MISS_POLICIES = ['publish_late', 'skip'] as const;
+/**
+ * Що робити зі слотом, який пропустили.
+ *
+ * `publish_last` існує заради одного сценарію: гроші на ключі скінчились, за
+ * ніч накопичилось десять невиконаних слотів, і вранці все це разом полетіло б
+ * у канал. Читачеві потрібен свіжий пост, а не вчорашня черга.
+ */
+export const MISS_POLICIES = ['publish_late', 'publish_last', 'skip'] as const;
 export type MissPolicy = (typeof MISS_POLICIES)[number];
 
 export const SCHEDULE_MODES = ['slots', 'interval'] as const;

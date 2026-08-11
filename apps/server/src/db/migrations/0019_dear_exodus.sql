@@ -1,0 +1,1 @@
+ALTER TYPE "public"."miss_policy" ADD VALUE 'publish_last' BEFORE 'skip';

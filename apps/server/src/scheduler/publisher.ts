@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { env } from '../config.js';
 import { db } from '../db/client.js';
 import { posts, projects } from '../db/schema.js';
@@ -40,7 +40,21 @@ export async function publisherTick(): Promise<PublisherReport> {
         inArray(posts.status, ['planned', 'ready']),
       ),
     )
+    .orderBy(asc(posts.scheduledAt))
     .limit(200);
+
+  /*
+   * Найсвіжіший прострочений слот кожного проєкту — те, що публікує
+   * `publish_last`. Рахується до циклу, бо рішення про кожен пост залежить від
+   * того, чи є за ним новіший: інакше довелось би дивитись уперед на кожному
+   * кроці.
+   */
+  const newestLate = new Map<string, string>();
+  for (const { post, project } of due) {
+    if (!post.scheduledAt || post.scheduledAt >= graceCutoff) continue;
+    if (project.missPolicy !== 'publish_last') continue;
+    newestLate.set(project.id, post.id);
+  }
 
   for (const { post, project } of due) {
     const log = logger.child({ post_id: post.id, project_id: project.id });
@@ -49,25 +63,35 @@ export async function publisherTick(): Promise<PublisherReport> {
     if (!post.scheduledAt) continue;
     const late = post.scheduledAt < graceCutoff;
 
-    // Past the grace window with nothing ready. `publish_late` keeps waiting;
-    // `skip` gives up so the channel does not suddenly emit yesterday's slot.
-    if (late && project.missPolicy === 'skip') {
+    /*
+     * Слот пройшов, а поста не було. `publish_late` віддає всі прострочені —
+     * після нічного простою це вся черга за раз; `publish_last` лишає з неї
+     * найсвіжіший, бо читачеві потрібен свіжий пост, а не вчорашня черга;
+     * `skip` не публікує нічого.
+     */
+    const droppedByPolicy =
+      late &&
+      (project.missPolicy === 'skip' ||
+        (project.missPolicy === 'publish_last' && newestLate.get(project.id) !== post.id));
+
+    if (droppedByPolicy) {
+      const reason =
+        project.missPolicy === 'skip'
+          ? `Слот пропущено: пост не був готовий протягом ${env.PUBLISH_GRACE_MINUTES} хв`
+          : 'Слот пропущено: за ним є новіший прострочений, а проєкт публікує лише останній';
+
       await db
         .update(posts)
-        .set({
-          status: 'skipped',
-          error: `Слот пропущено: пост не був готовий протягом ${env.PUBLISH_GRACE_MINUTES} хв`,
-          updatedAt: new Date(),
-        })
+        .set({ status: 'skipped', error: reason, updatedAt: new Date() })
         .where(and(eq(posts.id, post.id), inArray(posts.status, ['planned', 'ready'])));
       skipped++;
-      log.warn({ scheduledAt: post.scheduledAt }, 'slot skipped by miss policy');
+      log.warn({ scheduledAt: post.scheduledAt, policy: project.missPolicy }, 'slot skipped by miss policy');
       await alert({
         kind: 'slot_skipped',
         projectId: project.id,
         postId: post.id,
         title: 'Слот пропущено',
-        detail: `Пост не був готовий протягом ${env.PUBLISH_GRACE_MINUTES} хв після ${post.scheduledAt.toISOString()}`,
+        detail: `${reason} (слот ${post.scheduledAt.toISOString()})`,
       }).catch(() => undefined);
       continue;
     }

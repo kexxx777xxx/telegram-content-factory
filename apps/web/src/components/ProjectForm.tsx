@@ -589,12 +589,22 @@ export function ProjectForm({
               />
             </Field>
 
-            <Field label="Якщо пост не встиг" hint="Стосується слота, який настав, а пост ще не готовий.">
+            <Field
+              label="Якщо пост не встиг"
+              hint={
+                <>
+                  Стосується слота, який настав, а пост ще не готовий. «Усі прострочені» після
+                  довгого простою — скажімо, коли на ключі скінчились гроші — вивалить у канал усю
+                  чергу за раз; «лише останній» публікує найсвіжіший, а решту позначає пропущеними.
+                </>
+              }
+            >
               <Select
                 value={value.missPolicy}
                 onChange={(e) => set('missPolicy', e.target.value as never)}
               >
-                <option value="publish_late">Опублікувати із запізненням</option>
+                <option value="publish_late">Опублікувати всі прострочені</option>
+                <option value="publish_last">Опублікувати лише останній прострочений</option>
                 <option value="skip">Пропустити слот</option>
               </Select>
             </Field>

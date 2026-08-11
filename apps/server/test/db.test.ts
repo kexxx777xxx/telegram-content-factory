@@ -44,7 +44,7 @@ import { forgetSettings, resolveStyle, saveSettings } from '../src/services/sett
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
 import { generatePostText, listPosts, resetForRegeneration } from '../src/services/posts.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
-import { reclaimStuckPublishing } from '../src/scheduler/publisher.js';
+import { publisherTick, reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 import { saveActionConfig } from '../src/services/generationConfig.js';
 
 /**
@@ -624,6 +624,67 @@ describe('batch reaches the buffer at all', () => {
     expect(job).toBeDefined();
     // Nothing to gain by generating days early without the cheap tier.
     expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+});
+
+describe('пропущені слоти', () => {
+  it('«лише останній» лишає найсвіжіший, а старші позначає пропущеними', async () => {
+    /*
+     * Сценарій — не гіпотетичний: на ключі скінчились гроші, за ніч набралось
+     * десять невиконаних слотів, гроші поповнили. `publish_late` вивалив би в
+     * канал усю чергу за раз. Читачеві потрібен свіжий пост, а не вчорашня
+     * черга, тож публікується лише останній прострочений.
+     */
+    const project = await makeProject({ status: 'active', missPolicy: 'publish_last' });
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+
+    const rows = await db
+      .insert(posts)
+      .values([
+        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(5), topicTitle: 'Найстаріший' },
+        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(3), topicTitle: 'Середній' },
+        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(1), topicTitle: 'Найсвіжіший' },
+      ])
+      .returning();
+
+    const report = await publisherTick();
+
+    expect(report.skipped).toBe(2);
+    expect(report.queued).toBe(1);
+
+    const after = await db.select().from(posts).where(eq(posts.projectId, project.id));
+    const byTopic = new Map(after.map((p) => [p.topicTitle, p.status]));
+    expect(byTopic.get('Найстаріший')).toBe('skipped');
+    expect(byTopic.get('Середній')).toBe('skipped');
+    expect(byTopic.get('Найсвіжіший')).toBe('ready');
+
+    const queuedJobs = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(queuedJobs.map((j) => (j.payload as { postId?: string }).postId)).toEqual([
+      rows.find((r) => r.topicTitle === 'Найсвіжіший')!.id,
+    ]);
+  });
+
+  it('«всі прострочені» лишає чергу як є', async () => {
+    const project = await makeProject({ status: 'active', missPolicy: 'publish_late' });
+    await db.insert(posts).values([
+      {
+        projectId: project.id,
+        status: 'ready',
+        scheduledAt: new Date(Date.now() - 5 * 3600_000),
+        topicTitle: 'Старий',
+      },
+      {
+        projectId: project.id,
+        status: 'ready',
+        scheduledAt: new Date(Date.now() - 3600_000),
+        topicTitle: 'Свіжий',
+      },
+    ]);
+
+    const report = await publisherTick();
+
+    expect(report.skipped).toBe(0);
+    expect(report.queued).toBe(2);
   });
 });
 
