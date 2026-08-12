@@ -2,7 +2,7 @@ import type { PostStatus } from '@tcf/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ChainExhaustedError, ChainMissingError, runChain, type ChainRunResult } from '../ai/chain.js';
 import { db } from '../db/client.js';
-import { posts, projects, type Post, type Project } from '../db/schema.js';
+import { batchJobs, posts, projects, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { generateImage } from '../media/pipeline.js';
 import { removeStagedImage } from '../media/staging.js';
@@ -50,6 +50,9 @@ async function batchedText(
     const outcome = await collectBatch(existing.id);
     if (outcome?.state === 'pending') return 'waiting';
 
+    // Замовлення прийшло цілком — розкладаємо його по всіх постах одразу, ще до
+    // того, як до кожного дійде своя джоба.
+    await distributeGroupText(existing.providerName, post.id);
     await dropBatch(existing.id);
     if (outcome?.state === 'succeeded' && outcome.text) {
       return {
@@ -129,6 +132,73 @@ async function batchedText(
    * the cost — the miss policy then decides what happens when it arrives.
    */
   return project.batchMode === 'batch_only' ? 'blocked' : null;
+}
+
+/**
+ * Розкладає відповіді одного замовлення по постах, яким вони належать.
+ *
+ * Без цього готовий текст лежав у рядку `batch_jobs`, доки до поста не дійде
+ * його власна джоба — а вона прокидається за годину-дві. Наслідків було два, і
+ * обидва видно в журналі: тридцять оплачених відповідей чекали неспожитими, а
+ * ілюстрація щоразу малювалась поодинці, бо в стані «текст є, картинки немає»
+ * ніколи не було двох постів одночасно — а отже, і замовлення на малювання не
+ * збиралось.
+ *
+ * Поточний пост пропускається: його відповідь повертається викликачу і
+ * зберігається звичайним шляхом разом з усією метаінформацією про генерацію.
+ */
+async function distributeGroupText(providerName: string, currentPostId: string): Promise<void> {
+  const siblings = await db
+    .select()
+    .from(batchJobs)
+    .where(and(eq(batchJobs.providerName, providerName), eq(batchJobs.state, 'succeeded')));
+
+  for (const row of siblings) {
+    if (!row.postId || row.postId === currentPostId || !row.resultText) continue;
+
+    const [target] = await db.select().from(posts).where(eq(posts.id, row.postId)).limit(1);
+    // Пост міг піти далі сам — синхронною генерацією або руками. Перезаписувати
+    // готовий текст відповіддю, яку ніхто вже не чекав, не можна.
+    if (!target || target.textHtml || target.status !== 'planned') {
+      await dropBatch(row.id);
+      continue;
+    }
+
+    const clean = sanitizeTelegramHtml(row.resultText);
+    await db
+      .update(posts)
+      .set({
+        textHtml: clean.html,
+        generation: {
+          ...(target.generation as GenerationMeta),
+          model: row.model,
+          promptId: row.promptId ?? undefined,
+          promptVersion: row.promptVersion ?? undefined,
+          inputTokens: row.inputTokens ?? undefined,
+          outputTokens: row.outputTokens ?? undefined,
+          generatedAt: new Date().toISOString(),
+          removedTags: clean.removedTags,
+          visibleLength: visibleLength(clean.html),
+        },
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, row.postId));
+
+    await record({
+      projectId: row.projectId,
+      postId: row.postId,
+      kind: 'generation_step',
+      action: 'post_text',
+      model: row.model,
+      source: 'auto',
+      message: `Текст із batch-замовлення: ${visibleLength(clean.html)} символів, модель ${row.model}`,
+      inputTokens: row.inputTokens ?? undefined,
+      outputTokens: row.outputTokens ?? undefined,
+    });
+
+    await dropBatch(row.id);
+  }
 }
 
 /** Найраніший слот у замовленні — за ним і рахується, доки відповідь корисна. */

@@ -627,6 +627,65 @@ describe('batch reaches the buffer at all', () => {
   });
 });
 
+describe('групове batch-замовлення', () => {
+  it('розкладає відповіді по всіх постах замовлення, а не лише по своєму', async () => {
+    /*
+     * Дефект, який це ловить: відповідь лежала в рядку `batch_jobs`, доки до
+     * поста не дійде його власна джоба — тобто годину-дві. Тридцять оплачених
+     * відповідей чекали неспожитими, а стан «текст є, картинки немає» ніколи
+     * не тримав двох постів одночасно, тож замовлення на малювання не
+     * збиралось і кожна ілюстрація йшла за повну ціну.
+     */
+    const project = await makeProject({ imageMode: 'none' });
+    const far = new Date(Date.now() + 8 * 3600_000);
+    const [key] = await db
+      .insert(apiKeys)
+      .values({ provider: 'gemini', label: 'p', secretEnc: encryptSecret('s'), batchEnabled: true })
+      .returning();
+
+    const rows = await db
+      .insert(posts)
+      .values([
+        { projectId: project.id, status: 'planned', scheduledAt: far, topicTitle: 'Свій', normalizedHash: 'sviy' },
+        {
+          projectId: project.id,
+          status: 'planned',
+          scheduledAt: new Date(far.getTime() + 3600_000),
+          topicTitle: 'Сусід',
+          normalizedHash: 'susid',
+        },
+      ])
+      .returning();
+
+    const order = 'batches/group-1';
+    await db.insert(batchJobs).values(
+      rows.map((row, index) => ({
+        projectId: project.id,
+        postId: row.id,
+        apiKeyId: key!.id,
+        action: 'post_text' as const,
+        model: 'gemini-3.5-flash',
+        providerName: order,
+        requestIndex: index,
+        state: 'succeeded' as const,
+        resultText: `<b>Текст ${index}</b>`,
+        deadline: far,
+      })),
+    );
+
+    expect(await generatePostText(rows[0]!.id)).toBe('generated');
+
+    const after = await db.select().from(posts).where(eq(posts.projectId, project.id));
+    const byTopic = new Map(after.map((p) => [p.topicTitle, p.textHtml]));
+    // Свій пост дійшов до кінця, сусід дістав свій текст і чекає лише на
+    // ілюстрацію — його джоба вже не проситиме модель писати вдруге.
+    expect(byTopic.get('Свій')).toBe('<b>Текст 0</b>');
+    expect(byTopic.get('Сусід')).toBe('<b>Текст 1</b>');
+    // Замовлення спожите цілком: рядки прибрано, платити за них удруге нічим.
+    expect(await db.select().from(batchJobs)).toHaveLength(0);
+  });
+});
+
 describe('пропущені слоти', () => {
   it('«лише останній» лишає найсвіжіший, а старші позначає пропущеними', async () => {
     /*
