@@ -1,5 +1,5 @@
 import { scheduleSchema } from '@tcf/shared';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, sql } from 'drizzle-orm';
 import { db, pool } from '../db/client.js';
 import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
@@ -165,6 +165,94 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
   }
 
   return { postsPlanned, jobsEnqueued };
+}
+
+/**
+ * Переставляє ще не опубліковані пости на слоти нового розкладу.
+ *
+ * Зміна розкладу без цього означала канал, який деякий час живе за двома
+ * розкладами одразу: нові слоти рахуються по-новому, а два десятки вже
+ * запланованих постів виходять у старі години, і «перевів канал на вечір»
+ * фактично починало діяти лише за добу-дві.
+ *
+ * Переставляється час, не зміст: тема, текст і картинка лишаються на своїх
+ * рядках. Порядок теж — найстаріший запланований пост іде в найближчий новий
+ * слот, тож черга не перемішується.
+ */
+export async function rescheduleFuturePosts(project: Project): Promise<number> {
+  const affected = await db
+    .select()
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, project.id),
+        gt(posts.scheduledAt, new Date()),
+        inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
+      ),
+    )
+    .orderBy(asc(posts.scheduledAt));
+
+  if (affected.length === 0) return 0;
+
+  const schedule = scheduleSchema.parse(project.schedule);
+  const slots = computeSlots(schedule, project.timezone, new Date(), affected.length);
+
+  /*
+   * Слотів може виявитись менше, ніж постів: новий розклад рідший, а вікно
+   * пошуку скінченне. Тоді переставляються перші — лишити пост без часу гірше,
+   * ніж лишити його на старому.
+   */
+  const moving = affected.slice(0, slots.length);
+  if (moving.length === 0) return 0;
+
+  await db.transaction(async (tx) => {
+    /*
+     * Спершу звільняємо старі часи, і лише потім розставляємо нові: слоти
+     * старого й нового розкладів перетинаються, а `posts_slot_uniq` не дасть
+     * двом постам стояти на одній хвилині навіть на мить. Усе в одній
+     * транзакції — обрив посередині не лишить пости без слотів.
+     */
+    await tx
+      .update(posts)
+      .set({ scheduledAt: null, updatedAt: new Date() })
+      .where(
+        inArray(
+          posts.id,
+          moving.map((post) => post.id),
+        ),
+      );
+
+    for (const [index, post] of moving.entries()) {
+      await tx
+        .update(posts)
+        .set({ scheduledAt: slots[index]!, updatedAt: new Date() })
+        .where(eq(posts.id, post.id));
+    }
+  });
+
+  /*
+   * Джоба генерації прив'язана до старого слоту своїм `run_after`. Пост, який
+   * поїхав на день пізніше, згенерувався б за старим часом і чекав добу
+   * готовим; той, що поїхав раніше, — не встиг би зовсім.
+   */
+  for (const [index, post] of moving.entries()) {
+    await db
+      .update(jobs)
+      .set({ runAfter: await generationStart(project, slots[index]!), updatedAt: new Date() })
+      .where(
+        and(
+          eq(jobs.dedupeKey, `post:${post.id}:generate`),
+          inArray(jobs.status, ['pending']),
+        ),
+      );
+  }
+
+  logger.info(
+    { project_id: project.id, moved: moving.length, kept: affected.length - moving.length },
+    'future posts re-timed to the new schedule',
+  );
+
+  return moving.length;
 }
 
 /**

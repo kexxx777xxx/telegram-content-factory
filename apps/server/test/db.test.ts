@@ -44,6 +44,8 @@ import { forgetSettings, resolveStyle, saveSettings } from '../src/services/sett
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
 import { generatePostText, listPosts, resetForRegeneration } from '../src/services/posts.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
+import { updateProject } from '../src/services/projects.js';
+import { computeSlots } from '../src/scheduler/slots.js';
 import { publisherTick, reclaimStuckPublishing } from '../src/scheduler/publisher.js';
 import { saveActionConfig } from '../src/services/generationConfig.js';
 
@@ -624,6 +626,110 @@ describe('batch reaches the buffer at all', () => {
     expect(job).toBeDefined();
     // Nothing to gain by generating days early without the cheap tier.
     expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+});
+
+describe('зміна розкладу', () => {
+  it('переставляє ще не опубліковані пости на нові слоти', async () => {
+    /*
+     * Без цього канал якийсь час живе за двома розкладами: нові слоти
+     * рахуються по-новому, а два десятки вже запланованих постів виходять у
+     * старі години — тобто «перевів канал на вечір» починало діяти лише за
+     * добу-дві.
+     */
+    const project = await makeProject({
+      schedule: { mode: 'slots', slots: ['09:00'], weekdays: [] },
+      timezone: 'UTC',
+    });
+    const day = 24 * 3600_000;
+    const rows = await db
+      .insert(posts)
+      .values([
+        {
+          projectId: project.id,
+          status: 'ready',
+          scheduledAt: new Date(Date.now() + day),
+          topicTitle: 'Перший',
+          textHtml: '<b>1</b>',
+        },
+        {
+          projectId: project.id,
+          status: 'planned',
+          scheduledAt: new Date(Date.now() + 2 * day),
+          topicTitle: 'Другий',
+        },
+        // Уже опублікований лишається там, де вийшов: переписувати історію нема
+        // сенсу й нема як — пост у каналі вже стоїть.
+        {
+          projectId: project.id,
+          status: 'published',
+          scheduledAt: new Date(Date.now() - day),
+          topicTitle: 'Старий',
+        },
+      ])
+      .returning();
+
+    const updated = await updateProject(project.id, {
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
+    });
+    expect(updated.schedule.mode).toBe('interval');
+
+    const after = await db.select().from(posts).where(eq(posts.projectId, project.id));
+    const byTopic = new Map(after.map((p) => [p.topicTitle, p]));
+
+    const expected = computeSlots(
+      { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
+      'UTC',
+      new Date(),
+      2,
+    );
+    expect(byTopic.get('Перший')!.scheduledAt!.getTime()).toBe(expected[0]!.getTime());
+    expect(byTopic.get('Другий')!.scheduledAt!.getTime()).toBe(expected[1]!.getTime());
+    // Зміст лишився на місці — переставляли час, а не пости.
+    expect(byTopic.get('Перший')!.textHtml).toBe('<b>1</b>');
+    // Опублікований не рухався.
+    expect(byTopic.get('Старий')!.scheduledAt!.getTime()).toBe(
+      rows.find((r) => r.topicTitle === 'Старий')!.scheduledAt!.getTime(),
+    );
+  });
+
+  it('посуває джобу генерації разом зі слотом', async () => {
+    // Джоба прив'язана до старого слоту своїм `run_after`: пост, що поїхав на
+    // день пізніше, згенерувався б за старим часом і чекав добу готовим.
+    const project = await makeProject({
+      schedule: { mode: 'slots', slots: ['09:00'], weekdays: [] },
+      timezone: 'UTC',
+      leadTimeMinutes: 60,
+    });
+    const [post] = await db
+      .insert(posts)
+      .values({
+        projectId: project.id,
+        status: 'planned',
+        scheduledAt: new Date(Date.now() + 10 * 24 * 3600_000),
+        topicTitle: 'Далекий',
+      })
+      .returning();
+    await enqueue({
+      type: 'generate_post',
+      projectId: project.id,
+      payload: { postId: post!.id },
+      runAfter: new Date(Date.now() + 9 * 24 * 3600_000),
+      dedupeKey: `post:${post!.id}:generate`,
+    });
+
+    await updateProject(project.id, {
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
+    });
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, post!.id));
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.dedupeKey, `post:${post!.id}:generate`));
+
+    expect(after!.scheduledAt!.getTime()).toBeLessThan(Date.now() + 2 * 3600_000);
+    expect(job!.runAfter.getTime()).toBeLessThan(after!.scheduledAt!.getTime());
   });
 });
 

@@ -9,6 +9,7 @@ import { db } from '../db/client.js';
 import { projects, type Project } from '../db/schema.js';
 import { decryptSecret, encryptSecret, maskStoredSecret } from '../crypto/secrets.js';
 import { forgetLogSetting } from './activityLog.js';
+import { rescheduleFuturePosts } from '../scheduler/planner.js';
 
 /** Thrown for conditions the API turns into 4xx rather than 500. */
 export class ProjectConflictError extends Error {}
@@ -147,6 +148,15 @@ export async function updateProject(id: string, patch: ProjectUpdate): Promise<P
 
   const [row] = await db.update(projects).set(values).where(eq(projects.id, id)).returning();
   if (!row) throw new ProjectNotFoundError('Проєкт не знайдено');
+
+  /*
+   * Розклад і пояс задають час публікації, тож змінити їх — це змінити час усіх
+   * постів, які ще не вийшли. Інакше канал деякий час живе за двома розкладами:
+   * нові слоти по-новому, а вже заплановані пости — у старі години.
+   */
+  if (patch.schedule !== undefined || patch.timezone !== undefined) {
+    await rescheduleFuturePosts(row);
+  }
   // The chain runner caches the switches for half a minute; a save is the one
   // moment the operator expects them to apply immediately.
   forgetLogSetting(id);
