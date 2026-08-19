@@ -7,6 +7,8 @@
  * generation, so the rules are enforced in code instead.
  */
 
+import { withHashtags } from '@tcf/shared';
+
 /** Telegram's supported tags. Everything else becomes plain text. */
 const ALLOWED = new Set([
   'b',
@@ -215,4 +217,34 @@ function decodeEntities(text: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, '&');
+}
+
+/**
+ * Зрізає хвіст із хештегів, який дописала модель.
+ *
+ * Теги додає код при публікації — рівно ті, що в налаштуваннях проєкту, і
+ * завжди в одному місці. Модель усе одно раз у раз пише свої (старі промпти
+ * прямо цього й просили), і без цього пост їхав би у канал із двома різними
+ * рядками тегів.
+ *
+ * Межа `(^|\s)` перед решіткою — не косметика: без неї «мова C#» лишалась би
+ * без решітки, бо остання лексема тексту виглядає як тег.
+ */
+export function stripTrailingHashtags(html: string): string {
+  return html.replace(/(?:(?:^|[ \t\n])#[^\s#<>]+)+[ \t\n]*$/u, '').trimEnd();
+}
+
+/**
+ * На скільки символів пост не влазить у ліміт проєкту. `<= 0` — влазить.
+ *
+ * Рахується разом із хештегами, бо в канал піде саме такий текст. Ліміт — це
+ * правило, а не побажання: текст понад нього не зберігається і пост із ним не
+ * стає готовим.
+ */
+export function postOverflow(
+  textHtml: string,
+  hashtags: string[],
+  postMaxChars: number,
+): number {
+  return visibleLength(withHashtags(textHtml, hashtags)) - postMaxChars;
 }

@@ -1,4 +1,12 @@
-import { TELEGRAM_CAPTION_LIMIT, type LogEntry, type PostDto, type PostsPage, type ProjectDto } from '@tcf/shared';
+import {
+  TELEGRAM_CAPTION_LIMIT,
+  textBudget,
+  withHashtags,
+  type LogEntry,
+  type PostDto,
+  type PostsPage,
+  type ProjectDto,
+} from '@tcf/shared';
 import {
   AlertCircle,
   Check,
@@ -373,10 +381,15 @@ function PostRow({
   /** Nothing has been asked of a model yet — the row is only a subject. */
   const isIdea = post.status === 'idea';
   const length = post.generation.visibleLength ?? 0;
-  // Two different thresholds, and both matter: what the project asked the model
-  // for, and where Telegram stops accepting a caption.
-  const overTarget = length > project.postMaxChars;
-  const overCaption = length > TELEGRAM_CAPTION_LIMIT;
+  /*
+   * Бюджет, а не сам ліміт: у пості лежить текст без хештегів, а в канал піде з
+   * ними. Два пороги, і обидва важать: за першим пост відхиляється як
+   * незавершений, за другим Telegram перестає приймати підпис під фото.
+   */
+  const tail = withHashtags('', project.hashtags).length;
+  const budget = textBudget(project.postMaxChars, project.hashtags);
+  const overTarget = length > budget;
+  const overCaption = length + tail > TELEGRAM_CAPTION_LIMIT;
 
   async function save() {
     setBusy(true);
@@ -474,7 +487,9 @@ function PostRow({
                 className="font-mono text-xs"
               />
               <p className={`text-xs ${overTarget ? 'text-amber-600' : 'text-slate-500'}`}>
-                {length} символів із {project.postMaxChars}
+                {length} символів із {budget}
+                {tail > 0 && ` (+${tail} на хештеги)`}
+                {overTarget && ' — довший текст пост не приймає, потрібна перегенерація'}
                 {overCaption && ` — понад ${TELEGRAM_CAPTION_LIMIT}, піде окремим повідомленням під фото`}
               </p>
             </>

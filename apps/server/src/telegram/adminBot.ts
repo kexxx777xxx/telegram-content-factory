@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { withHashtags } from '@tcf/shared';
 import { config, env } from '../config.js';
 import { db } from '../db/client.js';
 import { posts, projects } from '../db/schema.js';
@@ -166,7 +167,9 @@ export async function sendApprovalCard(postId: string): Promise<boolean> {
   const slot = row.post.scheduledAt
     ? row.post.scheduledAt.toLocaleString('uk-UA', { timeZone: row.project.timezone })
     : 'без слоту';
-  const preview = (row.post.textHtml ?? '').slice(0, 700);
+  // З хештегами: картка показує пост таким, яким він піде в канал, а не текст
+  // без хвоста, який дописується вже при відправці.
+  const preview = withHashtags(row.post.textHtml ?? '', row.project.hashtags).slice(0, 700);
 
   const buttons: InlineButton[][] = [
     [

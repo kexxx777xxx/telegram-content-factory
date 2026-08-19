@@ -4,10 +4,16 @@ import { ChainExhaustedError, ChainMissingError, runChain, type ChainRunResult }
 import { db } from '../db/client.js';
 import { batchJobs, posts, projects, type Post, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
-import { generateImage } from '../media/pipeline.js';
-import { removeStagedImage } from '../media/staging.js';
+import { generateImage, type ImageResult } from '../media/pipeline.js';
+import { removeStagedImage, stagedImageExists } from '../media/staging.js';
 import { sendApprovalCard } from '../telegram/adminBot.js';
-import { sanitizeTelegramHtml, visibleLength } from '../telegram/html.js';
+import {
+  postOverflow,
+  sanitizeTelegramHtml,
+  stripTrailingHashtags,
+  visibleLength,
+  type SanitizeResult,
+} from '../telegram/html.js';
 import {
   BATCH_DEADLINE_MARGIN_MS,
   BATCH_MAX_ITEMS,
@@ -24,6 +30,29 @@ import { record } from './activityLog.js';
 import { ensureSubject, insertIdeas } from './ideas.js';
 
 export class PostNotFoundError extends Error {}
+
+/**
+ * Текст довший за ліміт проєкту — не пост, а чернетка, яку ще треба переписати.
+ *
+ * Ліміт задають, щоб пост влазив у підпис під фото; текст, який його перевищив,
+ * розривається на друге повідомлення саме там, де налаштування обіцяло цього не
+ * допустити. Тому такий текст не зберігається взагалі: пост лишається
+ * незавершеним, а наступний захід пише новий. Ілюстрації це не стосується —
+ * вона намальована до теми, а не до конкретної відповіді, і перемальовувати її
+ * означало б платити за чужу помилку.
+ */
+export class PostTooLongError extends Error {}
+
+/**
+ * Відповідь моделі у тому вигляді, в якому вона може лягти на рядок поста.
+ *
+ * Хештеги зрізаються тут, а не при публікації: на рядку має лежати рівно те,
+ * що редагує оператор, а теги дописує код перед відправкою.
+ */
+function cleanPostText(raw: string): SanitizeResult {
+  const clean = sanitizeTelegramHtml(raw);
+  return { ...clean, html: stripTrailingHashtags(clean.html) };
+}
 
 /**
  * Text from the batch tier, or a decision about waiting for it.
@@ -153,6 +182,8 @@ async function distributeGroupText(providerName: string, currentPostId: string):
     .from(batchJobs)
     .where(and(eq(batchJobs.providerName, providerName), eq(batchJobs.state, 'succeeded')));
 
+  const projectCache = new Map<string, Project | undefined>();
+
   for (const row of siblings) {
     if (!row.postId || row.postId === currentPostId || !row.resultText) continue;
 
@@ -164,7 +195,39 @@ async function distributeGroupText(providerName: string, currentPostId: string):
       continue;
     }
 
-    const clean = sanitizeTelegramHtml(row.resultText);
+    if (!projectCache.has(row.projectId)) {
+      const [found] = await db.select().from(projects).where(eq(projects.id, row.projectId)).limit(1);
+      projectCache.set(row.projectId, found);
+    }
+    const owner = projectCache.get(row.projectId);
+    if (!owner) {
+      await dropBatch(row.id);
+      continue;
+    }
+
+    const clean = cleanPostText(row.resultText);
+
+    /*
+     * Той самий ліміт, що й у синхронному шляху: відповідь із дешевого тарифу
+     * не стає винятком лише тому, що за неї вже заплачено. Пост лишається
+     * `planned` — його власна джоба напише текст заново, а намальована
+     * ілюстрація на рядку доживе до нього.
+     */
+    const over = postOverflow(clean.html, owner.hashtags, owner.postMaxChars);
+    if (over > 0) {
+      await record({
+        projectId: row.projectId,
+        postId: row.postId,
+        kind: 'note',
+        action: 'post_text',
+        model: row.model,
+        source: 'auto',
+        ok: false,
+        message: `Текст із batch-замовлення відхилено: на ${over} символів довший за ліміт ${owner.postMaxChars}`,
+      });
+      await dropBatch(row.id);
+      continue;
+    }
     await db
       .update(posts)
       .set({
@@ -354,9 +417,33 @@ export async function generatePostText(
         }));
 
       // The model was asked for a restricted tag set; this is what enforces it.
-      const clean = sanitizeTelegramHtml(result.text);
+      const clean = cleanPostText(result.text);
       if (clean.removedTags.length > 0) {
         log.info({ removedTags: clean.removedTags }, 'model returned markup outside the allowed set');
+      }
+
+      /*
+       * Довжину теж просили в промпті — і так само не отримали гарантії. Текст
+       * понад ліміт не лягає на рядок узагалі: інакше пост дійшов би до слоту
+       * «готовим» і поїхав у канал двома повідомленнями замість підпису під
+       * фото. Пост вертається в `planned` (це робить `fail`), ілюстрація на
+       * рядку лишається, і наступний захід пише лише текст.
+       */
+      const over = postOverflow(clean.html, project.hashtags, project.postMaxChars);
+      if (over > 0) {
+        await record({
+          projectId: project.id,
+          postId: post.id,
+          kind: 'note',
+          action: 'post_text',
+          model: result.model,
+          source: 'auto',
+          ok: false,
+          message: `Текст відхилено: на ${over} символів довший за ліміт ${project.postMaxChars} (з хештегами)`,
+        });
+        throw new PostTooLongError(
+          `Текст на ${over} символів довший за ліміт проєкту (${project.postMaxChars} символів разом із хештегами)`,
+        );
       }
 
       textHtml = clean.html;
@@ -408,12 +495,33 @@ export async function generatePostText(
   }
 
   try {
+    /*
+     * Ілюстрація могла лишитись від попереднього заходу — найчастіше тому, що
+     * текст відхилили за довжиною. Вона намальована до теми, а тема та сама,
+     * тож малювати вдруге означало б платити за те саме: найдорожчий виклик у
+     * пості повторюється через помилку, до якої не має стосунку. Свідома
+     * перегенерація (`resetForRegeneration`) стирає і файл, і шлях — після неї
+     * тут уже нічого не знайдеться.
+     */
+    const staged: ImageResult | null = stagedImageExists(post.imagePath)
+      ? {
+          path: post.imagePath!,
+          kind: (post.imageKind as ImageResult['kind'] | null) ?? 'svg',
+          svgSource: post.svgSource,
+          model: null,
+          attempts: 0,
+          notes: [],
+        }
+      : null;
+
     // Image generation happens after the text so the image-model branch can
     // describe what the post actually says, not just its topic.
-    const image = await generateImage(
-      { id: post.id, topicTitle, textHtml, scheduledAt: post.scheduledAt },
-      project,
-    );
+    const image =
+      staged ??
+      (await generateImage(
+        { id: post.id, topicTitle, textHtml, scheduledAt: post.scheduledAt },
+        project,
+      ));
     if (image === 'waiting') return 'batched';
 
     const meta: GenerationMeta = {
@@ -439,7 +547,7 @@ export async function generatePostText(
       })
       .where(eq(posts.id, post.id));
 
-    if (image) {
+    if (image && !staged) {
       await record({
         projectId: project.id,
         postId: post.id,
@@ -509,7 +617,19 @@ export async function updatePostText(id: string, textHtml: string): Promise<Post
     throw new PostNotFoundError('Опублікований пост редагувати не можна — текст уже стерто');
   }
 
-  const clean = sanitizeTelegramHtml(textHtml);
+  const clean = cleanPostText(textHtml);
+
+  // Правка руками — така сама межа, як і генерація: пост із текстом понад ліміт
+  // не існує ні в якому вигляді, інакше правка була б способом його обійти.
+  const [owner] = await db.select().from(projects).where(eq(projects.id, post.projectId)).limit(1);
+  if (owner) {
+    const over = postOverflow(clean.html, owner.hashtags, owner.postMaxChars);
+    if (over > 0) {
+      throw new PostTooLongError(
+        `Текст на ${over} символів довший за ліміт проєкту (${owner.postMaxChars} символів разом із хештегами)`,
+      );
+    }
+  }
 
   // `removedTags` must describe *this* edit, not the original generation —
   // otherwise the editor reports nothing while quietly rewriting what was typed.

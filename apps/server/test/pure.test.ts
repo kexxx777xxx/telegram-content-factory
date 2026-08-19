@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
-import { sanitizeTelegramHtml, visibleLength } from '../src/telegram/html.js';
+import {
+  postOverflow,
+  sanitizeTelegramHtml,
+  stripTrailingHashtags,
+  visibleLength,
+} from '../src/telegram/html.js';
 import { sanitizeSvg, SvgInvalidError } from '../src/media/svg/sanitize.js';
 import { fallbackSvg } from '../src/media/svg/fallback.js';
 import { normalizeTopic } from '../src/services/ideas.js';
@@ -11,7 +16,7 @@ import { TELEGRAM_MESSAGE_LIMIT } from '@tcf/shared';
 import { backoffSeconds } from '../src/queue/claim.js';
 import { BATCH_DEADLINE_MARGIN_MS, BATCH_MIN_SLACK_MS, BATCH_TURNAROUND_MS } from '../src/ai/batch.js';
 import { MIN_REFILL_BATCH, refillCount } from '../src/services/ideas.js';
-import { textBudget } from '@tcf/shared';
+import { textBudget, withHashtags } from '@tcf/shared';
 
 /** Everything here is pure — no database, no network. */
 
@@ -358,18 +363,56 @@ describe('topic refill', () => {
 });
 
 describe('бюджет символів під текст', () => {
-  it('віднімає рядок хештегів разом із пробілом перед ним', () => {
+  it('віднімає рівно той хвіст, який допишеться при публікації', () => {
     // 1024 — ліміт підпису під фото: пост із хвостом хештегів рівно на їхню
-    // довжину не влазив у нього і їхав другим повідомленням.
-    expect(textBudget(1024, '#їжа #рецепт')).toBe(1024 - '#їжа #рецепт'.length - 1);
+    // довжину не влазив у нього і їхав другим повідомленням. Віднімається саме
+    // `withHashtags`, інакше бюджет був би щедрішим за правило, яке потім
+    // відхиляє текст рівно на цю різницю.
+    expect(textBudget(1024, ['#їжа', '#рецепт'])).toBe(1024 - '\n\n#їжа #рецепт'.length);
   });
 
   it('без хештегів віддає весь ліміт', () => {
-    expect(textBudget(1024, '')).toBe(1024);
+    expect(textBudget(1024, [])).toBe(1024);
   });
 
   it('не опускається нижче нижньої межі поля', () => {
     // Рядок хештегів довший за ліміт лишив би моделі нуль або від'ємне число.
-    expect(textBudget(220, '#' + 'а'.repeat(300))).toBe(200);
+    expect(textBudget(220, ['#' + 'а'.repeat(300)])).toBe(200);
+  });
+});
+
+describe('хештеги дописує код', () => {
+  it('ставить їх окремим абзацом у кінці', () => {
+    expect(withHashtags('Текст', ['#а', '#б'])).toBe('Текст\n\n#а #б');
+  });
+
+  it('без хештегів не чіпає текст', () => {
+    expect(withHashtags('Текст', [])).toBe('Текст');
+  });
+
+  it('зрізає теги, які модель дописала сама', () => {
+    // Промпт просить їх не писати, але старі промпти просили навпаки — без
+    // цього пост поїхав би у канал із двома рядками тегів.
+    expect(stripTrailingHashtags('Текст\n\n#моделін #теги')).toBe('Текст');
+    expect(stripTrailingHashtags('Текст без тегів')).toBe('Текст без тегів');
+  });
+
+  it('не приймає решітку всередині слова за тег', () => {
+    // «мова C#» лишалась би без решітки, якби межа перед тегом не перевірялась.
+    expect(stripTrailingHashtags('улюблена мова — C#')).toBe('улюблена мова — C#');
+  });
+});
+
+describe('ліміт довжини поста', () => {
+  it('рахує текст разом із хештегами', () => {
+    // Ліміт стосується повідомлення в каналі, а туди йде текст із хвостом.
+    expect(postOverflow('а'.repeat(300), ['#тег'], 310)).toBe(300 + '\n\n#тег'.length - 310);
+    expect(postOverflow('а'.repeat(300), [], 310)).toBeLessThanOrEqual(0);
+  });
+
+  it('не рахує розмітку, яку читач не бачить', () => {
+    // Ті самі правила, що й у `visibleLength`: інакше пост із <b> відхилявся б
+    // за символи, яких у каналі немає.
+    expect(postOverflow('<b>' + 'а'.repeat(100) + '</b>', [], 100)).toBe(0);
   });
 });

@@ -520,10 +520,11 @@ export function ProjectForm({
             label="Довжина поста, символів"
             hint={
               <>
-                Разом із хештегами. На сам текст лишається{' '}
-                <b>{textBudget(value.postMaxChars, hashtagList(value.hashtags).join(' '))}</b> —
-                саме це число йде в
-                промпт як <VarTag name="maxChars" />. До {TELEGRAM_CAPTION_LIMIT} пост іде підписом
+                Разом із хештегами, які дописуються до тексту при публікації. На сам текст
+                лишається <b>{textBudget(value.postMaxChars, hashtagList(value.hashtags))}</b> —
+                саме це число йде в промпт як <VarTag name="maxChars" />, і саме за ним пост
+                відхиляється: довший текст не зберігається, пост лишається незавершеним.
+                До {TELEGRAM_CAPTION_LIMIT} пост іде підписом
                 під фото; довший Telegram підписом не приймає, тож поїде окремим повідомленням
                 одразу за зображенням.
               </>

@@ -42,7 +42,14 @@ import { projectVariables } from '../src/prompts/variables.js';
 import { COMMON_VARIABLES, promptVariables } from '@tcf/shared';
 import { forgetSettings, resolveStyle, saveSettings } from '../src/services/settings.js';
 import { ideaCounts, insertIdeas, needsReplenish } from '../src/services/ideas.js';
-import { generatePostText, listPosts, resetForRegeneration } from '../src/services/posts.js';
+import {
+  generatePostText,
+  listPosts,
+  PostTooLongError,
+  resetForRegeneration,
+  updatePostText,
+} from '../src/services/posts.js';
+import { removeStagedImage, writeStagedImage } from '../src/media/staging.js';
 import { createApiKey, updateApiKey } from '../src/services/apiKeys.js';
 import { updateProject } from '../src/services/projects.js';
 import { computeSlots } from '../src/scheduler/slots.js';
@@ -1359,7 +1366,7 @@ describe('prompt variables', () => {
       hashtags: '#arch #db',
       // Не 700: ліміт стосується всього повідомлення, а хештеги в нього входять,
       // тож моделі дістається залишок під сам текст.
-      maxChars: 700 - '#arch #db'.length - 1,
+      maxChars: 700 - '\n\n#arch #db'.length,
     });
     // Style falls through the same chain resolveStyle owns.
     expect(vars.style).toBe(BUILTIN_STYLE);
@@ -1377,5 +1384,107 @@ describe('prompt variables', () => {
     }
     expect(promptVariables('post_text').map((v) => v.name)).toContain('topic');
     expect(promptVariables('svg').map((v) => v.name)).toContain('persona');
+  });
+});
+
+describe('ліміт довжини поста', () => {
+  /** Один пост, одна готова batch-відповідь: моделі тут не питають. */
+  async function withBatchedText(project: Project, text: string, imagePath?: string) {
+    const far = new Date(Date.now() + 8 * 3600_000);
+    const [key] = await db
+      .insert(apiKeys)
+      .values({ provider: 'gemini', label: 'k', secretEnc: encryptSecret('s'), batchEnabled: true })
+      .returning();
+
+    const [post] = await db
+      .insert(posts)
+      .values({
+        projectId: project.id,
+        status: 'planned',
+        scheduledAt: far,
+        topicTitle: 'Тема з готовою відповіддю',
+        normalizedHash: `h-${Math.random().toString(36).slice(2, 10)}`,
+        ...(imagePath ? { imagePath, imageKind: 'image_model' as const } : {}),
+      })
+      .returning();
+
+    await db.insert(batchJobs).values({
+      projectId: project.id,
+      postId: post!.id,
+      apiKeyId: key!.id,
+      action: 'post_text',
+      model: 'gemini-3.5-flash',
+      providerName: `batches/${post!.id}`,
+      requestIndex: 0,
+      state: 'succeeded',
+      resultText: text,
+      deadline: far,
+    });
+
+    return post!;
+  }
+
+  it('не зберігає текст, довший за ліміт, і лишає пост незавершеним', async () => {
+    /*
+     * Ліміт задають, щоб пост влазив у підпис під фото. Текст понад нього
+     * розривався б на друге повідомлення рівно там, де налаштування обіцяло
+     * цього не допустити, — тож він не лягає на рядок узагалі.
+     */
+    const project = await makeProject({ imageMode: 'none', postMaxChars: 300, hashtags: ['#тег'] });
+    const post = await withBatchedText(project, 'а'.repeat(400));
+
+    await expect(generatePostText(post.id)).rejects.toBeInstanceOf(PostTooLongError);
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, post.id));
+    expect(after!.textHtml).toBeNull();
+    expect(after!.status).toBe('planned');
+    expect(after!.error).toContain('ліміт');
+  });
+
+  it('рахує ліміт разом із хештегами, яких у тексті ще немає', async () => {
+    // Текст рівно в ліміт, але хвіст тегів дописується при публікації — і саме
+    // на нього пост і виїжджав за межу, яку налаштування мало тримати.
+    const project = await makeProject({ imageMode: 'none', postMaxChars: 300, hashtags: ['#тег'] });
+    const post = await withBatchedText(project, 'а'.repeat(300));
+
+    await expect(generatePostText(post.id)).rejects.toBeInstanceOf(PostTooLongError);
+  });
+
+  it('лишає намальовану ілюстрацію відхиленому посту', async () => {
+    /*
+     * Найдорожчий виклик у пості — малювання, і до довжини тексту він не має
+     * стосунку: картинка намальована до теми, а тема та сама. Перемальовувати
+     * її на кожній невдалій спробі тексту означало б платити за чужу помилку.
+     *
+     * Доказ — `imageKind`: проєкт малює SVG, а на рядку лежить `image_model`.
+     * Якби ілюстрація генерувалась заново, вид змінився б.
+     */
+    const project = await makeProject({ imageMode: 'svg', postMaxChars: 1024 });
+    const staged = await writeStagedImage(`test-${Date.now()}`, Buffer.from('png'), 'png');
+    const post = await withBatchedText(project, '<b>Короткий текст</b>', staged);
+
+    expect(await generatePostText(post.id)).toBe('generated');
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, post.id));
+    expect(after!.status).toBe('ready');
+    expect(after!.imagePath).toBe(staged);
+    expect(after!.imageKind).toBe('image_model');
+
+    await removeStagedImage(staged);
+  });
+
+  it('не дає обійти ліміт правкою руками', async () => {
+    // Інакше редактор був би способом покласти в буфер те, чого генерація не
+    // приймає, — і про це дізнавались би вже в каналі.
+    const project = await makeProject({ postMaxChars: 300 });
+    const [post] = await db
+      .insert(posts)
+      .values({ projectId: project.id, status: 'ready', textHtml: 'коротко' })
+      .returning();
+
+    await expect(updatePostText(post!.id, 'а'.repeat(400))).rejects.toBeInstanceOf(PostTooLongError);
+
+    const [after] = await db.select().from(posts).where(eq(posts.id, post!.id));
+    expect(after!.textHtml).toBe('коротко');
   });
 });

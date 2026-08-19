@@ -11,6 +11,7 @@ import {
   listPosts,
   postCounts,
   PostNotFoundError,
+  PostTooLongError,
   resetForRegeneration,
   updatePostText,
   type GenerationMeta,
@@ -125,6 +126,7 @@ postsRouter.patch('/posts/:postId', async (req, res) => {
   try {
     res.json(toDto(await updatePostText(params.data.postId, parsed.data.textHtml)));
   } catch (err) {
+    if (err instanceof PostTooLongError) return badRequest(res, err.message);
     if (err instanceof PostNotFoundError) {
       res.status(409).json({ error: err.message });
       return;

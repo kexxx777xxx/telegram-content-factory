@@ -25,6 +25,6 @@ export async function projectVariables(
     language: project.language,
     hashtags,
     style: await resolveStyle(project.imageStyle),
-    maxChars: textBudget(project.postMaxChars, hashtags),
+    maxChars: textBudget(project.postMaxChars, project.hashtags),
   };
 }

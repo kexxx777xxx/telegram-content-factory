@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import type { LogSource } from '@tcf/shared';
+import { withHashtags, type LogSource } from '@tcf/shared';
 import { config } from '../config.js';
 import { record } from './activityLog.js';
 import { db } from '../db/client.js';
@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { removeStagedImage, stagedImageExists } from '../media/staging.js';
 import { TelegramApiError } from '../telegram/api.js';
 import { buildPermalink } from '../telegram/permalink.js';
+import { postOverflow } from '../telegram/html.js';
 import { copyToChat, publishPost as sendToTelegram } from '../telegram/publisher.js';
 import { getPost, PostNotFoundError, type GenerationMeta } from './posts.js';
 import { projectBotToken } from './projects.js';
@@ -58,6 +59,25 @@ export async function publishReadyPost(
   const token = projectBotToken(project);
   if (!token) throw new NotPublishableError('Для проєкту не задано токен бота');
 
+  /*
+   * Остання перевірка ліміту — тут, а не лише при генерації: пост міг лягти в
+   * буфер до того, як ліміт задали чи зменшили, і слот не має бути моментом,
+   * коли про це дізнаються читачі.
+   */
+  const over = postOverflow(post.textHtml, project.hashtags, project.postMaxChars);
+  if (over > 0) {
+    throw new NotPublishableError(
+      `Текст на ${over} символів довший за ліміт проєкту (${project.postMaxChars} з хештегами) — пост не готовий`,
+    );
+  }
+
+  /*
+   * Хештеги дописує код, а не модель: у кожному пості каналу вони ті самі й на
+   * тому самому місці, а зміна налаштування переставляє їх одразу в усьому
+   * буфері, а не з наступної генерації.
+   */
+  const outgoing = withHashtags(post.textHtml, project.hashtags);
+
   // A missing file means the render was swept or never written; publishing text
   // alone would change the channel's format, so this is a failure, not a
   // silent downgrade.
@@ -75,7 +95,7 @@ export async function publishReadyPost(
     result = await sendToTelegram({
       token,
       chatId: project.telegramChannelId,
-      textHtml: post.textHtml,
+      textHtml: outgoing,
       imagePath: project.imageMode === 'none' ? null : post.imagePath,
       botKey: project.id,
       /*
