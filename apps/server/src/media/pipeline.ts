@@ -2,8 +2,7 @@ import type { ImageMode } from '@tcf/shared';
 import type { AiAction } from '@tcf/shared';
 import { ChainExhaustedError, ChainMissingError, runChain } from '../ai/chain.js';
 import {
-  BATCH_IMAGE_MARGIN_MS,
-  BATCH_IMAGE_MIN_SLACK_MS,
+  BATCH_DEADLINE_MS,
   BATCH_MAX_ITEMS,
   BATCH_MIN_ITEMS,
   batchCandidates,
@@ -45,13 +44,13 @@ export interface ImagePost {
   id: string;
   topicTitle: string | null;
   textHtml: string | null;
-  /** Потрібен, щоб вирішити, чи лишається час на дешевий тариф. */
-  scheduledAt?: Date | null;
 }
 
 export interface ImageResult {
   path: string;
   kind: 'svg' | 'svg_fallback' | 'image_model';
+  /** Чи прийшла ця ілюстрація з дешевого batch-замовлення. Видно в журналі. */
+  viaBatch: boolean;
   svgSource: string | null;
   model: string | null;
   attempts: number;
@@ -69,13 +68,15 @@ export interface ImageResult {
 export async function generateImage(
   post: ImagePost,
   project: Project,
+  opts: { allowBatch?: boolean } = {},
 ): Promise<ImageResult | 'waiting' | null> {
   const mode: ImageMode = project.imageMode;
   if (mode === 'none') return null;
+  const allowBatch = opts.allowBatch === true;
 
   return mode === 'image_model'
-    ? generateWithImageModel(post, project)
-    : generateWithSvg(post, project);
+    ? generateWithImageModel(post, project, allowBatch)
+    : generateWithSvg(post, project, allowBatch);
 }
 
 /**
@@ -91,6 +92,8 @@ async function batchedIllustration(
   post: ImagePost,
   project: Project,
   action: AiAction,
+  /** Чи має цей пост добу на очікування; див. `generatePostText`. */
+  allowBatch: boolean,
   /** Змінні для сусіда по замовленню; для малювання це ще й окремий виклик. */
   buildVariables: (candidate: Post) => Promise<Record<string, string | number | undefined>>,
   limit: number,
@@ -112,8 +115,7 @@ async function batchedIllustration(
     return null;
   }
 
-  const slot = post.scheduledAt;
-  if (!slot || slot.getTime() - Date.now() < BATCH_IMAGE_MIN_SLACK_MS) return null;
+  if (!allowBatch) return noBatch(post, project, action, 'пост потрібен у каналі зараз');
   if (project.batchMode === 'off') return null;
 
   /*
@@ -123,7 +125,6 @@ async function batchedIllustration(
   const candidates = await batchCandidates({
     projectId: project.id,
     action,
-    minSlackMs: BATCH_IMAGE_MIN_SLACK_MS,
     needsText: true,
     limit,
   });
@@ -133,7 +134,12 @@ async function batchedIllustration(
       { project_id: project.id, action, candidates: candidates.length },
       'too few posts ready for one illustration batch, drawing synchronously',
     );
-    return null;
+    return noBatch(
+      post,
+      project,
+      action,
+      `у буфері ${candidates.length} пост(ів) із текстом і без картинки, а замовлення збирається щонайменше з ${BATCH_MIN_ITEMS}`,
+    );
   }
 
   const items: BatchItem[] = [];
@@ -147,21 +153,43 @@ async function batchedIllustration(
     }
   }
 
-  if (items.length < BATCH_MIN_ITEMS) return null;
-
-  const earliest = candidates
-    .map((c) => c.scheduledAt)
-    .filter((s): s is Date => s !== null)
-    .reduce((min, s) => (s < min ? s : min), slot);
+  if (items.length < BATCH_MIN_ITEMS) {
+    return noBatch(post, project, action, 'не вдалося скласти запити для сусідів по замовленню');
+  }
 
   const submitted = await submitBatch({
     action,
     projectId: project.id,
     items,
-    deadline: new Date(earliest.getTime() - BATCH_IMAGE_MARGIN_MS),
+    deadline: new Date(Date.now() + BATCH_DEADLINE_MS),
   });
 
-  return submitted.length > 0 ? 'waiting' : null;
+  if (submitted.length > 0) return 'waiting';
+  return noBatch(post, project, action, 'провайдер не прийняв замовлення (ключ без batch або відмова)');
+}
+
+/**
+ * Чому ця ілюстрація малюється за повну ціну.
+ *
+ * Пишеться в журнал проєкту, а не лише в лог процесу: «чому картинка не пішла
+ * дешево» — питання, яке ставлять до конкретного поста, і відповідь має лежати
+ * поруч із ним. Завжди повертає `null` — це шлях «роби як завжди».
+ */
+async function noBatch(
+  post: ImagePost,
+  project: Project,
+  action: AiAction,
+  reason: string,
+): Promise<null> {
+  await record({
+    projectId: project.id,
+    postId: post.id,
+    kind: 'note',
+    action,
+    source: 'auto',
+    message: `Ілюстрація без batch: ${reason}`,
+  });
+  return null;
 }
 
 /**
@@ -174,11 +202,13 @@ async function batchedIllustration(
 async function generateWithSvg(
   post: ImagePost,
   project: Project,
+  allowBatch: boolean,
 ): Promise<ImageResult | 'waiting'> {
   const log = logger.child({ post_id: post.id, project_id: project.id });
   const topic = post.topicTitle ?? 'схема';
   const notes: string[] = [];
   let attempts = 0;
+  let viaBatch = false;
 
   const tryRender = async (svg: string, model: string | null): Promise<ImageResult | null> => {
     const clean = sanitizeSvg(svg);
@@ -187,7 +217,7 @@ async function generateWithSvg(
 
     const png = await renderSvgToPng(clean.svg);
     const path = await writeStagedImage(post.id, png.data, png.extension);
-    return { path, kind: 'svg', svgSource: clean.svg, model, attempts, notes };
+    return { path, kind: 'svg', svgSource: clean.svg, model, attempts, notes, viaBatch };
   };
 
   let lastError: string | null = null;
@@ -204,10 +234,16 @@ async function generateWithSvg(
     post,
     project,
     'svg',
+    allowBatch,
     async (candidate) => ({ ...(await projectVariables(project)), topic: candidate.topicTitle ?? 'схема' }),
     BATCH_MAX_ITEMS,
   );
   if (cheap === 'waiting') return 'waiting';
+
+  if (cheap?.text) {
+    viaBatch = true;
+    notes.push('SVG прийшов із batch-замовлення (−50%)');
+  }
 
   try {
     attempts++;
@@ -271,7 +307,7 @@ async function generateWithSvg(
   const path = await writeStagedImage(post.id, png.data, png.extension);
   log.info({ reason: lastError }, 'fell back to deterministic schematic');
 
-  return { path, kind: 'svg_fallback', svgSource: null, model: null, attempts, notes };
+  return { path, kind: 'svg_fallback', svgSource: null, model: null, attempts, notes, viaBatch };
 }
 
 /**
@@ -284,6 +320,7 @@ async function generateWithSvg(
 async function generateWithImageModel(
   post: ImagePost,
   project: Project,
+  allowBatch: boolean,
 ): Promise<ImageResult | 'waiting'> {
   const log = logger.child({ post_id: post.id, project_id: project.id });
   const notes: string[] = [];
@@ -327,6 +364,7 @@ async function generateWithImageModel(
     post,
     project,
     'image',
+    allowBatch,
     async (candidate) =>
       candidate.id === post.id
         ? drawVariables
@@ -364,9 +402,10 @@ async function generateWithImageModel(
       action: 'image',
       model: cheap.model,
       source: 'auto',
+      batch: true,
       message: `Зображення намальовано моделлю ${cheap.model} на batch-тарифі, ${png.data.length} байт`,
     });
-    return { path, kind: 'image_model', svgSource: null, model: cheap.model, attempts: 1, notes };
+    return { path, kind: 'image_model', svgSource: null, model: cheap.model, attempts: 1, notes, viaBatch: true };
   }
 
   const template = await resolvePrompt('image', project.id, null);
@@ -423,6 +462,7 @@ async function generateWithImageModel(
         return {
           path,
           kind: 'image_model',
+          viaBatch: false,
           svgSource: null,
           model: step.model,
           attempts: 1,

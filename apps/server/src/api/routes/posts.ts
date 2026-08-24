@@ -13,7 +13,9 @@ import {
   PostNotFoundError,
   PostTooLongError,
   resetForRegeneration,
+  updatePostQueue,
   updatePostText,
+  bumpToFront,
   type GenerationMeta,
 } from '../../services/posts.js';
 import { postLog } from '../../services/activityLog.js';
@@ -32,6 +34,7 @@ function toDto(row: Post): PostDto {
     projectId: row.projectId,
     status: row.status,
     scheduledAt: row.scheduledAt?.toISOString() ?? null,
+    position: row.position,
     publishedAt: row.publishedAt?.toISOString() ?? null,
     topicTitle: row.topicTitle,
     category: row.category,
@@ -115,18 +118,66 @@ postsRouter.get('/posts/:postId', async (req, res) => {
   }
 });
 
-/** Manual edit. The text goes through the same sanitiser as generated output. */
+/**
+ * Ручна правка поста: текст, місце в черзі або закріплений час.
+ *
+ * Три різні речі в одному PATCH, бо для оператора це один об'єкт і одна форма.
+ * `null` у `position`/`scheduledAt` означає «прибрати», а відсутнє поле — «не
+ * чіпати»; без цієї різниці закріплений час не було б як зняти.
+ */
+const postPatchSchema = z.object({
+  textHtml: z.string().max(20_000).optional(),
+  position: z.number().int().min(-1_000_000).max(1_000_000).nullable().optional(),
+  scheduledAt: z.string().datetime().nullable().optional(),
+});
+
 postsRouter.patch('/posts/:postId', async (req, res) => {
   const params = postParam.safeParse(req.params);
   if (!params.success) return badRequest(res, firstIssue(params.error));
 
-  const parsed = z.object({ textHtml: z.string().max(20_000) }).safeParse(req.body);
+  const parsed = postPatchSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, firstIssue(parsed.error));
+  const { textHtml, position, scheduledAt } = parsed.data;
 
   try {
-    res.json(toDto(await updatePostText(params.data.postId, parsed.data.textHtml)));
+    let post =
+      textHtml !== undefined
+        ? await updatePostText(params.data.postId, textHtml)
+        : await getPost(params.data.postId);
+
+    if (position !== undefined || scheduledAt !== undefined) {
+      post = await updatePostQueue(params.data.postId, {
+        position,
+        scheduledAt:
+          scheduledAt === undefined ? undefined : scheduledAt === null ? null : new Date(scheduledAt),
+      });
+    }
+    res.json(toDto(post));
   } catch (err) {
     if (err instanceof PostTooLongError) return badRequest(res, err.message);
+    if (err instanceof PostNotFoundError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    // Дві публікації на ту саму хвилину — `posts_slot_uniq`. Помилка бази тут
+    // означає рівно одне, і сказати це зрозуміло дешевше, ніж перевіряти
+    // заздалегідь і все одно ловити гонку.
+    if (err instanceof Error && 'code' in err && err.code === '23505') {
+      res.status(409).json({ error: 'На цю хвилину вже закріплено інший пост' });
+      return;
+    }
+    throw err;
+  }
+});
+
+/** «Хай піде наступним» — найчастіше бажання до черги, однією кнопкою. */
+postsRouter.post('/posts/:postId/bump', async (req, res) => {
+  const params = postParam.safeParse(req.params);
+  if (!params.success) return badRequest(res, firstIssue(params.error));
+
+  try {
+    res.json(toDto(await bumpToFront(params.data.postId)));
+  } catch (err) {
     if (err instanceof PostNotFoundError) {
       res.status(409).json({ error: err.message });
       return;

@@ -1,6 +1,9 @@
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { scheduleSchema } from '@tcf/shared';
 import { db } from '../db/client.js';
 import { apiKeys, apiKeyUsage, jobs, posts, projects, rateLimitState } from '../db/schema.js';
+import { computeSlots } from '../scheduler/slots.js';
+import { logger } from '../logger.js';
 
 /**
  * The one screen that answers "is anything about to go wrong".
@@ -35,17 +38,16 @@ export interface DashboardData {
   blocked: { keyLabel: string; model: string; blockedUntil: string }[];
   spendToday: { keyLabel: string; requests: number; inputTokens: number; outputTokens: number; budget: number | null }[];
   slo: {
-    /** Published within the grace window, over the last 7 days. */
-    publishedOnTime: number;
-    publishedLate: number;
-    skipped: number;
+    /** За останні 7 днів. */
+    published: number;
+    failed: number;
     /** Share of posts whose illustration came from the fallback rather than a model. */
     fallbackImages: number;
     totalImages: number;
   };
 }
 
-export async function getDashboard(graceMinutes: number): Promise<DashboardData> {
+export async function getDashboard(): Promise<DashboardData> {
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 24 * 3600_000);
   const today = now.toISOString().slice(0, 10);
@@ -55,20 +57,7 @@ export async function getDashboard(graceMinutes: number): Promise<DashboardData>
   const bufferRows = await db
     .select({ projectId: posts.projectId, count: sql<number>`count(*)::int` })
     .from(posts)
-    .where(
-      and(
-        gte(posts.scheduledAt, now),
-        inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
-      ),
-    )
-    .groupBy(posts.projectId);
-
-  const nextSlotRows = await db
-    // Typed as string, not Date: the driver hands aggregates back as text, and
-    // asserting `sql<Date>` would only hide that until it threw at runtime.
-    .select({ projectId: posts.projectId, next: sql<string | null>`min(${posts.scheduledAt})` })
-    .from(posts)
-    .where(and(gte(posts.scheduledAt, now), inArray(posts.status, ['planned', 'ready', 'awaiting_approval'])))
+    .where(inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']))
     .groupBy(posts.projectId);
 
   const lastPublishedRows = await db
@@ -109,7 +98,7 @@ export async function getDashboard(graceMinutes: number): Promise<DashboardData>
     bufferDepth: bufferRows.find((r) => r.projectId === project.id)?.count ?? 0,
     freshTopics: freshByProject.get(project.id) ?? 0,
     topicsBufferMin: project.topicsBufferMin,
-    nextSlotAt: toIso(nextSlotRows.find((r) => r.projectId === project.id)?.next),
+    nextSlotAt: nextSlotOf(project),
     lastPublishedAt: toIso(lastPublishedRows.find((r) => r.projectId === project.id)?.last),
     failedPosts:
       troubleRows.find((r) => r.projectId === project.id && r.status === 'failed')?.count ?? 0,
@@ -182,27 +171,23 @@ export async function getDashboard(graceMinutes: number): Promise<DashboardData>
       outputTokens: r.outputTokens,
       budget: r.budget,
     })),
-    slo: await computeSlo(weekAgo, graceMinutes),
+    slo: await computeSlo(weekAgo),
   };
 }
 
 /**
- * The KPI from the PRD said "0% publication failures", which is not achievable
- * as stated. These are the numbers that can actually be tracked: how many slots
- * landed on time, and how often the illustration had to fall back.
+ * Числа, які справді відстежуються.
+ *
+ * «Вчасно / із запізненням» звідси зникло разом із прив'язкою поста до хвилини:
+ * пост більше не має власного часу, повз який можна спізнитись (ADR 0009).
+ * Лишилось те, що має сенс і в моделі черги: скільки вийшло, скільки чекає і
+ * як часто ілюстрацію малював запасний генератор замість моделі.
  */
-async function computeSlo(since: Date, graceMinutes: number): Promise<DashboardData['slo']> {
+async function computeSlo(since: Date): Promise<DashboardData['slo']> {
   const result = await db.execute(sql`
     select
-      count(*) filter (
-        where status = 'published'
-          and published_at <= scheduled_at + make_interval(mins => ${graceMinutes})
-      )::int as on_time,
-      count(*) filter (
-        where status = 'published'
-          and published_at > scheduled_at + make_interval(mins => ${graceMinutes})
-      )::int as late,
-      count(*) filter (where status = 'skipped')::int as skipped,
+      count(*) filter (where status = 'published')::int as published,
+      count(*) filter (where status = 'failed')::int as failed,
       count(*) filter (where image_kind = 'svg_fallback')::int as fallback_images,
       count(*) filter (where image_kind is not null)::int as total_images
     from posts
@@ -210,20 +195,35 @@ async function computeSlo(since: Date, graceMinutes: number): Promise<DashboardD
   `);
 
   const row = rowsOf<{
-    on_time: number;
-    late: number;
-    skipped: number;
+    published: number;
+    failed: number;
     fallback_images: number;
     total_images: number;
   }>(result)[0];
 
   return {
-    publishedOnTime: row?.on_time ?? 0,
-    publishedLate: row?.late ?? 0,
-    skipped: row?.skipped ?? 0,
+    published: row?.published ?? 0,
+    failed: row?.failed ?? 0,
     fallbackImages: row?.fallback_images ?? 0,
     totalImages: row?.total_images ?? 0,
   };
+}
+
+/**
+ * Наступний слот проєкту — з розкладу, а не з рядка поста.
+ *
+ * Це і є вся зміна моделі в одному рядку: раніше «наступна публікація» була
+ * властивістю конкретного поста, тепер — властивістю каналу.
+ */
+function nextSlotOf(project: { schedule: unknown; timezone: string; status: string }): string | null {
+  if (project.status !== 'active') return null;
+  try {
+    const [slot] = computeSlots(scheduleSchema.parse(project.schedule), project.timezone, new Date(), 1);
+    return slot?.toISOString() ?? null;
+  } catch (err) {
+    logger.warn({ err }, 'project schedule cannot be read for the dashboard');
+    return null;
+  }
 }
 
 /** Aggregates arrive as strings or Dates depending on the column; normalise both. */

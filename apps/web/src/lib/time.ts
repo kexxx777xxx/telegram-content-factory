@@ -83,3 +83,26 @@ function offsetMinutes(zone: string, at: Date): number {
   const asZone = new Date(at.toLocaleString('en-US', { timeZone: zone }));
   return Math.round((asZone.getTime() - asUtc.getTime()) / 60_000);
 }
+
+/**
+ * `<input type="datetime-local">` ↔ instant, у поясі проєкту.
+ *
+ * Браузерний інпут завжди говорить настінним часом і нічого не знає про пояс,
+ * а закріплюють пост на «19:00 у каналі», а не «19:00 у мене». Тож обидва
+ * напрямки перекладу проходять через зсув потрібного поясу.
+ *
+ * ponytail: зсув береться в момент, близький до самої дати — рівно на межі
+ * переведення годинників це дає похибку в годину. Точний перерахунок означав би
+ * luxon у бандлі веба заради двох полів форми.
+ */
+export function toZonedInput(iso: string | Date, timezone: string): string {
+  const date = typeof iso === 'string' ? new Date(iso) : iso;
+  return new Date(date.getTime() + offsetMinutes(timezone, date) * 60_000)
+    .toISOString()
+    .slice(0, 16);
+}
+
+export function fromZonedInput(value: string, timezone: string): string {
+  const asUtc = new Date(`${value}:00Z`);
+  return new Date(asUtc.getTime() - offsetMinutes(timezone, asUtc) * 60_000).toISOString();
+}

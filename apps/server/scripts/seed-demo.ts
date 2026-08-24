@@ -37,8 +37,6 @@ async function main() {
     publishMode: 'auto',
     postsBuffer: 3,
     topicsBufferMin: 10,
-    leadTimeMinutes: 180,
-    missPolicy: 'publish_late',
     postMaxChars: 1024,
     batchMode: 'partial',
     logEnabled: false,
@@ -63,8 +61,6 @@ async function main() {
     // 0 — генерація в момент публікації; протилежний до buffered шлях планувальника.
     postsBuffer: 0,
     topicsBufferMin: 0,
-    leadTimeMinutes: 0,
-    missPolicy: 'skip',
     postMaxChars: 700,
     batchMode: 'off',
     logEnabled: false,

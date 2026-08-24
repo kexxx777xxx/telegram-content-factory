@@ -67,7 +67,6 @@ const envSchema = z
     WORKER_CONCURRENCY: int(4, 1),
     PLANNER_TICK_SECONDS: int(60, 5),
     PUBLISHER_TICK_SECONDS: int(30, 5),
-    PUBLISH_GRACE_MINUTES: int(30, 0),
 
     EVENT_RETENTION_DAYS: int(30, 0),
     JOB_RETENTION_DAYS: int(7, 0),

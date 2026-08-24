@@ -4,7 +4,6 @@ import {
   AI_PROVIDERS,
   KEY_LEVELS,
   IMAGE_MODES,
-  MISS_POLICIES,
   LOG_KINDS,
   LOG_SOURCES,
   POST_STATUSES,
@@ -104,15 +103,12 @@ const projectFields = {
   publishMode: z.enum(PUBLISH_MODES),
 
   /**
-   * 0 is deliberate and supported: no pre-generation, the post is produced at
-   * publish time (JIT). Any value ≥ 1 keeps that many slots generated ahead.
+   * Скільки постів тримати готовими в черзі. 0 — нічого не готувати наперед:
+   * пост пишеться в момент, коли розклад дійшов до нього (JIT).
    */
   postsBuffer: z.number().int().min(0).max(50),
   /** 0 = no topic bank; a topic is requested from the model just in time. */
   topicsBufferMin: z.number().int().min(0).max(500),
-  /** How long before a slot generation starts. Ignored when postsBuffer = 0. */
-  leadTimeMinutes: z.number().int().min(0).max(7 * 24 * 60),
-  missPolicy: z.enum(MISS_POLICIES),
 
   /**
    * Target post length, in visible characters. Reaches the text prompt as
@@ -150,8 +146,6 @@ export const projectInputSchema = z.object({
   publishMode: projectFields.publishMode.default('auto'),
   postsBuffer: projectFields.postsBuffer.default(3),
   topicsBufferMin: projectFields.topicsBufferMin.default(10),
-  leadTimeMinutes: projectFields.leadTimeMinutes.default(180),
-  missPolicy: projectFields.missPolicy.default('publish_late'),
   postMaxChars: projectFields.postMaxChars.default(TELEGRAM_CAPTION_LIMIT),
   batchMode: projectFields.batchMode.default('partial'),
   logEnabled: projectFields.logEnabled.default(false),
@@ -205,8 +199,6 @@ export const projectDtoSchema = z.object({
   publishMode: z.enum(PUBLISH_MODES),
   postsBuffer: z.number().int(),
   topicsBufferMin: z.number().int(),
-  leadTimeMinutes: z.number().int(),
-  missPolicy: z.enum(MISS_POLICIES),
   postMaxChars: z.number().int(),
   batchMode: z.enum(BATCH_MODES),
   logEnabled: z.boolean(),
@@ -431,6 +423,8 @@ export const logEntrySchema = z.object({
   source: z.enum(LOG_SOURCES).nullable(),
   message: z.string(),
   detail: z.string().nullable(),
+  /** Запис про роботу на дешевому batch-тарифі. */
+  batch: z.boolean(),
   inputTokens: z.number().int().nullable(),
   outputTokens: z.number().int().nullable(),
   durationMs: z.number().int().nullable(),
@@ -466,8 +460,16 @@ export const postDtoSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
   status: z.enum(POST_STATUSES),
-  /** Null while the row is still an idea — a subject with no slot yet. */
+  /**
+   * Закріплений час: пост вийде саме о цій хвилині, поза чергою. `null` —
+   * звичайний пост черги, який поїде в найближчий слот розкладу.
+   */
   scheduledAt: z.string().nullable(),
+  /**
+   * Ручний пріоритет у черзі: менше — раніше. `null` означає «мені все одно»,
+   * і такі пости беруться у випадковому порядку.
+   */
+  position: z.number().int().nullable(),
   publishedAt: z.string().nullable(),
   topicTitle: z.string().nullable(),
   /** Absorbed from the old topics table: an idea is just a post without a slot. */

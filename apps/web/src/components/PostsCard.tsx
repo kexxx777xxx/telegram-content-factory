@@ -14,14 +14,17 @@ import {
   FileText,
   Image as ImageIcon,
   Loader2,
+  Pin,
+  PinOff,
   RefreshCw,
   RotateCcw,
   Save,
+  ArrowUpToLine,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, type LaunchResult } from '../api/client';
-import { formatDateTime } from '../lib/time';
+import { formatDateTime, fromZonedInput, toZonedInput } from '../lib/time';
 import { LaunchButton } from './LaunchButton';
 import { IdeaTools } from './IdeaTools';
 import { Badge, Button, Card, Input, Spoiler, Textarea } from './ui';
@@ -40,12 +43,12 @@ const STATUS: Record<
   idea: {
     text: 'тема',
     tone: 'neutral',
-    hint: 'Пост, у якого поки є лише «про що». Слот отримає, коли планувальник дійде до нього — або зараз, кнопкою.',
+    hint: 'Пост, у якого поки є лише «про що». У чергу стане, коли планувальник наповнюватиме буфер — або зараз, кнопкою.',
   },
   planned: {
-    text: 'заплановано',
+    text: 'у черзі',
     tone: 'neutral',
-    hint: 'Час публікації заброньовано, до моделі ще ніхто не звертався. Генерація стартує за «запас часу» до слоту — а якщо тему ще не взято з банку, вона візьметься тоді ж.',
+    hint: 'Місце в черзі є, до моделі ще ніхто не звертався. Генерація почнеться найближчим заходом планувальника.',
   },
   generating: {
     text: 'генерується',
@@ -55,7 +58,7 @@ const STATUS: Record<
   ready: {
     text: 'готовий',
     tone: 'green',
-    hint: 'Текст і зображення лежать у буфері. Публікація — в момент слоту, без жодного виклику моделі.',
+    hint: 'Текст і зображення лежать у буфері. Поїде в найближчий слот розкладу, без жодного виклику моделі.',
   },
   awaiting_approval: {
     text: 'чекає апруву',
@@ -80,7 +83,7 @@ const STATUS: Record<
   skipped: {
     text: 'пропущено',
     tone: 'neutral',
-    hint: 'Пост не встиг до кінця grace-вікна, а проєкт налаштовано такі слоти пропускати.',
+    hint: 'Спадок старої моделі, коли пост володів хвилиною і міг її втратити. Черга пости не пропускає; таких більше не зʼявляється.',
   },
 };
 
@@ -94,6 +97,9 @@ const STATUS: Record<
  */
 const CONTENT_EXPECTED: string[] = ['ready', 'awaiting_approval', 'publishing'];
 
+/** Поки пост не пішов у канал, його місце в черзі можна змінювати. */
+const QUEUE_EDITABLE: string[] = ['idea', 'planned', 'generating', 'ready', 'awaiting_approval'];
+
 /** Sentinel for the cross-status filter; no post ever has this as a status. */
 const PROBLEM_FILTER = '__problems__';
 
@@ -105,7 +111,7 @@ const PROBLEM_FILTER = '__problems__';
  * chips says so.
  */
 function isProblem(post: PostDto, imageExpected: boolean): boolean {
-  if (post.status === 'failed' || post.status === 'skipped') return true;
+  if (post.status === 'failed') return true;
   if (post.error) return true;
   if (!CONTENT_EXPECTED.includes(post.status)) return false;
   return post.textHtml === null || (imageExpected && !post.hasImage);
@@ -235,8 +241,8 @@ export function PostsCard({ project }: { project: ProjectDto }) {
       title="Пости"
       hint={
         project.postsBuffer === 0
-          ? 'Один список: тема — це пост, у якого поки є лише «про що». Буфер вимкнено — пост готується в момент слоту.'
-          : `Один список: тема — це пост, у якого поки є лише «про що». Планувальник тримає ${project.postsBuffer} ${project.postsBuffer === 1 ? 'слот' : 'слоти'} наперед, генерація стартує за ${project.leadTimeMinutes} хв до публікації.`
+          ? 'Черга публікацій. Буфер вимкнено — пост пишеться в момент, коли розклад дійшов до нього.'
+          : `Черга публікацій: у найближчий слот розкладу піде верхній пост, у якого немає закріпленого часу. Планувальник тримає ${project.postsBuffer} готових наперед.`
       }
     >
       <div className="space-y-4">
@@ -351,6 +357,126 @@ export function PostsCard({ project }: { project: ProjectDto }) {
   );
 }
 
+/**
+ * Місце поста в черзі — три способи сказати одне й те саме, від найгрубішого до
+ * найточнішого.
+ *
+ * «Наступним» покриває майже все, чого від черги хочуть; пріоритет потрібен,
+ * коли постів кілька і порядок між ними важить; закріплений час — коли пост
+ * привʼязаний до події поза каналом. Без закріплення й без пріоритету пост іде
+ * у випадковому порядку — саме тому канал не читається як один згенерований
+ * захід підряд.
+ */
+function QueueControls({
+  post,
+  project,
+  onChanged,
+}: {
+  post: PostDto;
+  project: ProjectDto;
+  onChanged: () => void;
+}) {
+  const [pin, setPin] = useState(
+    post.scheduledAt ? toZonedInput(post.scheduledAt, project.timezone) : '',
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPin(post.scheduledAt ? toZonedInput(post.scheduledAt, project.timezone) : '');
+  }, [post.scheduledAt, project.timezone]);
+
+  async function apply(run: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не вдалося змінити чергу');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+      <div className="flex flex-wrap items-end gap-3">
+        <Button
+          variant="secondary"
+          disabled={busy}
+          onClick={() => void apply(() => api.bumpPost(post.id))}
+        >
+          <ArrowUpToLine className="size-4" />
+          Наступним
+        </Button>
+
+        <label className="text-xs text-slate-500">
+          Пріоритет
+          <Input
+            type="number"
+            className="mt-1 w-24"
+            disabled={busy}
+            defaultValue={post.position ?? ''}
+            placeholder="—"
+            onBlur={(e) => {
+              const raw = e.target.value.trim();
+              const next = raw === '' ? null : Number(raw);
+              if (next === (post.position ?? null)) return;
+              void apply(() => api.updatePostQueue(post.id, { position: next }));
+            }}
+          />
+        </label>
+
+        <label className="text-xs text-slate-500">
+          Закріпити час
+          <Input
+            type="datetime-local"
+            className="mt-1"
+            disabled={busy}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+          />
+        </label>
+
+        <Button
+          variant="secondary"
+          disabled={busy || pin === '' || (post.scheduledAt !== null && pin === toZonedInput(post.scheduledAt, project.timezone))}
+          onClick={() =>
+            void apply(() =>
+              api.updatePostQueue(post.id, { scheduledAt: fromZonedInput(pin, project.timezone) }),
+            )
+          }
+        >
+          <Pin className="size-4" />
+          Закріпити
+        </Button>
+
+        {post.scheduledAt && (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => void apply(() => api.updatePostQueue(post.id, { scheduledAt: null }))}
+          >
+            <PinOff className="size-4" />
+            Відкріпити
+          </Button>
+        )}
+      </div>
+
+      <p className="text-xs text-slate-500">
+        {post.scheduledAt
+          ? 'Закріплений пост виходить саме о цій хвилині, поза чергою і поза розкладом.'
+          : post.position !== null
+            ? `Пріоритет ${post.position}: менше число — раніше в черзі.`
+            : 'Без пріоритету — піде у випадковому порядку разом з іншими такими.'}
+      </p>
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
+  );
+}
+
 function PostRow({
   post,
   project,
@@ -374,9 +500,15 @@ function PostRow({
   }, [post.textHtml]);
 
   const label = STATUS[post.status] ?? { text: post.status, tone: 'neutral' as const, hint: '' };
-  const slot = post.scheduledAt
-    ? formatDateTime(post.scheduledAt, { timezone: project.timezone })
-    : 'без слоту';
+  const when = post.publishedAt
+    ? formatDateTime(post.publishedAt, { timezone: project.timezone })
+    : post.scheduledAt
+      ? `📌 ${formatDateTime(post.scheduledAt, { timezone: project.timezone })}`
+      : post.position !== null
+        ? `#${post.position}`
+        : // Статус збоку вже каже «у черзі»; повторювати це другим написом —
+          // рівно нуль нової інформації в рядку, який і так щільний.
+          '';
 
   /** Nothing has been asked of a model yet — the row is only a subject. */
   const isIdea = post.status === 'idea';
@@ -427,7 +559,7 @@ function PostRow({
         <span title={label.hint}>
           <Badge tone={label.tone}>{label.text}</Badge>
         </span>
-        <span className="font-mono text-xs text-slate-500">{slot}</span>
+        {when && <span className="font-mono text-xs text-slate-500">{when}</span>}
         {/*
           Wrapped, not truncated. A subject is the only thing that says what the
           post *is*, and the row cut it off at the width of the column with no
@@ -458,6 +590,10 @@ function PostRow({
       {expanded && (
         <div className="space-y-3 border-t border-slate-200 px-4 py-4">
           <p className="text-xs text-slate-500">{label.hint}</p>
+
+          {QUEUE_EDITABLE.includes(post.status) && (
+            <QueueControls post={post} project={project} onChanged={onChanged} />
+          )}
 
           {post.error && (
             <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">

@@ -1,5 +1,5 @@
 import type { PostStatus } from '@tcf/shared';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ChainExhaustedError, ChainMissingError, runChain, type ChainRunResult } from '../ai/chain.js';
 import { db } from '../db/client.js';
 import { batchJobs, posts, projects, type Post, type Project } from '../db/schema.js';
@@ -15,10 +15,9 @@ import {
   type SanitizeResult,
 } from '../telegram/html.js';
 import {
-  BATCH_DEADLINE_MARGIN_MS,
+  BATCH_DEADLINE_MS,
   BATCH_MAX_ITEMS,
   BATCH_MIN_ITEMS,
-  BATCH_MIN_SLACK_MS,
   batchCandidates,
   collectBatch,
   dropBatch,
@@ -65,14 +64,9 @@ async function batchedText(
   post: Post,
   project: Project,
   variables: Record<string, string | number | undefined>,
+  allowBatch: boolean,
 ): Promise<ChainRunResult | 'waiting' | 'blocked' | null> {
   const log = logger.child({ post_id: post.id, project_id: project.id });
-  /*
-   * No slot means nobody is waiting on a schedule — which sounds like the ideal
-   * batch candidate but is the opposite. A post without a slot is being run by
-   * hand, right now, and the cheap tier answers in up to a day.
-   */
-  const slot = post.scheduledAt;
 
   const existing = await findBatch(post.id, 'post_text');
   if (existing) {
@@ -103,11 +97,11 @@ async function batchedText(
   }
 
   /*
-   * Too close to the slot — or no slot at all, which means someone pressed a
-   * button just now. Either way there is no day to spare, so the mode does not
-   * enter into it: the normal pipeline runs.
+   * Хтось чекає просто зараз — ручний запуск, закріплена хвилина або порожній
+   * буфер, який пише пост у момент публікації. Доби на дешевий тариф немає, і
+   * режим тут ні до чого: працює звичайний ланцюжок.
    */
-  if (!slot || slot.getTime() - Date.now() < BATCH_MIN_SLACK_MS) return null;
+  if (!allowBatch) return null;
 
   if (project.batchMode === 'off') return null;
 
@@ -121,7 +115,6 @@ async function batchedText(
   const candidates = await batchCandidates({
     projectId: project.id,
     action: 'post_text',
-    minSlackMs: BATCH_MIN_SLACK_MS,
     needsText: false,
     limit: BATCH_MAX_ITEMS,
   });
@@ -148,17 +141,15 @@ async function batchedText(
       postId: candidate.id,
       variables: { ...shared, topic: candidate.topicTitle ?? '' },
     })),
-    // Дедлайн — за найближчим слотом у замовленні: воно приходить цілком, тож
-    // корисним має лишитись для найтерміновішого з постів.
-    deadline: new Date(earliestSlot(candidates, slot).getTime() - BATCH_DEADLINE_MARGIN_MS),
+    deadline: new Date(Date.now() + BATCH_DEADLINE_MS),
   });
 
   if (submitted.length > 0) return 'waiting';
 
   /*
    * «Лише batch» is a statement about price, and generating at full price is
-   * exactly what it forbids. The slot is left empty rather than filled at twice
-   * the cost — the miss policy then decides what happens when it arrives.
+   * exactly what it forbids. Пост лишається ненаписаним і просто не рухається
+   * чергою — слоту, який через це згорів би, більше не існує.
    */
   return project.batchMode === 'batch_only' ? 'blocked' : null;
 }
@@ -255,6 +246,7 @@ async function distributeGroupText(providerName: string, currentPostId: string):
       action: 'post_text',
       model: row.model,
       source: 'auto',
+      batch: true,
       message: `Текст із batch-замовлення: ${visibleLength(clean.html)} символів, модель ${row.model}`,
       inputTokens: row.inputTokens ?? undefined,
       outputTokens: row.outputTokens ?? undefined,
@@ -262,12 +254,6 @@ async function distributeGroupText(providerName: string, currentPostId: string):
 
     await dropBatch(row.id);
   }
-}
-
-/** Найраніший слот у замовленні — за ним і рахується, доки відповідь корисна. */
-function earliestSlot(candidates: Post[], fallback: Date): Date {
-  const slots = candidates.map((c) => c.scheduledAt).filter((s): s is Date => s !== null);
-  return slots.length > 0 ? new Date(Math.min(...slots.map((s) => s.getTime()))) : fallback;
 }
 
 /** Statuses a generation job may legitimately start from. */
@@ -295,33 +281,88 @@ export async function getPost(id: string): Promise<Post> {
 }
 
 /**
- * The whole list: scheduled posts first, then the idea bank.
+ * Список у тому порядку, у якому оператор про нього думає: спершу те, що вже
+ * вийшло, потім черга.
  *
- * `NULLS LAST` is load-bearing, not cosmetic. Ideas carry no slot, and Postgres
- * sorts NULLs *first* in a DESC order — so a project with more ideas than the
- * limit returned nothing but ideas, while the status chips (counted by a
- * separate query) still advertised posts that never appeared. The list looked
- * empty for the one channel that had used it most.
+ * Всередині черги порядок той самий, що й у публікатора, — закріплений час,
+ * далі ручний пріоритет. Випадковість сюди не тягнеться навмисно: список, який
+ * перемішується на кожне оновлення, неможливо читати.
  */
 export async function listPosts(projectId: string, limit = 500): Promise<Post[]> {
   return db
     .select()
     .from(posts)
     .where(eq(posts.projectId, projectId))
-    .orderBy(sql`${posts.scheduledAt} desc nulls last`, desc(posts.createdAt))
+    .orderBy(
+      sql`${posts.publishedAt} desc nulls last`,
+      sql`${posts.scheduledAt} asc nulls last`,
+      sql`${posts.position} asc nulls last`,
+      desc(posts.createdAt),
+    )
     .limit(limit);
 }
 
+/** Місце в черзі змінюють лише поки пост іще не пішов. */
+const QUEUE_EDITABLE: PostStatus[] = ['idea', 'planned', 'generating', 'ready', 'awaiting_approval'];
+
 /**
- * Produces the post text for a planned slot.
+ * Місце поста в черзі: закріплений час, ручний пріоритет або обидва.
+ *
+ * `null` в обох полях — це не «не чіпати», а «прибрати»: саме так пост
+ * повертається у звичайну чергу, а без явного скидання закріплений час не було
+ * б як зняти.
+ */
+export async function updatePostQueue(
+  id: string,
+  patch: { position?: number | null; scheduledAt?: Date | null },
+): Promise<Post> {
+  const post = await getPost(id);
+  if (!QUEUE_EDITABLE.includes(post.status)) {
+    throw new PostNotFoundError(`Пост у статусі «${post.status}» уже поза чергою`);
+  }
+
+  const values: Partial<typeof posts.$inferInsert> = { updatedAt: new Date() };
+  if (patch.position !== undefined) values.position = patch.position;
+  if (patch.scheduledAt !== undefined) values.scheduledAt = patch.scheduledAt;
+
+  const [row] = await db.update(posts).set(values).where(eq(posts.id, id)).returning();
+  if (!row) throw new PostNotFoundError('Пост не знайдено');
+  return row;
+}
+
+/**
+ * Ставить пост на початок черги.
+ *
+ * Окрема дія, а не «введіть число на одиницю менше за найменше»: «хочу, щоб цей
+ * пішов наступним» — це те, чого від черги хочуть найчастіше.
+ */
+export async function bumpToFront(id: string): Promise<Post> {
+  const post = await getPost(id);
+  const [row] = await db
+    .select({ min: sql<number | null>`min(${posts.position})` })
+    .from(posts)
+    .where(and(eq(posts.projectId, post.projectId), inArray(posts.status, QUEUE_EDITABLE)));
+
+  return updatePostQueue(id, { position: (row?.min ?? 1) - 1 });
+}
+
+/**
+ * Produces the post text for a queued post.
  *
  * Idempotent by status: a job that runs twice (a retry after an ambiguous
  * failure, say) finds the post already past `planned` and does nothing rather
  * than spending another model call and overwriting a draft someone may have
  * edited by hand.
+ *
+ * `allowBatch` каже, чи має пост право чекати добу на дешевий тариф. Це
+ * властивість не поста, а того, хто його запустив: буферна джоба нікуди не
+ * поспішає, а генерація в момент публікації — навпаки. Раніше відповідь
+ * виводилась із запасу до слоту, і саме тому batch для тексту не траплявся
+ * ніколи: джоба прокидалась за три години до слоту.
  */
 export async function generatePostText(
   postId: string,
+  opts: { allowBatch?: boolean } = {},
 ): Promise<'generated' | 'skipped' | 'batched'> {
   const post = await getPost(postId);
   const log = logger.child({ post_id: post.id, project_id: post.projectId });
@@ -382,11 +423,11 @@ export async function generatePostText(
   let textMeta: GenerationMeta | null = null;
 
   if (!textHtml) {
-    const batched = await batchedText(post, project, variables);
+    const batched = await batchedText(post, project, variables, opts.allowBatch === true);
     if (batched === 'waiting') return 'batched';
 
     if (batched === 'blocked') {
-      log.warn('batch-only project cannot batch this slot, generation skipped');
+      log.warn('batch-only project cannot batch this post, generation skipped');
       await record({
         projectId: project.id,
         postId: post.id,
@@ -485,7 +526,11 @@ export async function generatePostText(
         action: 'post_text',
         model: result.model,
         source: 'auto',
-        message: `Текст готовий: ${visibleLength(clean.html)} символів, модель ${result.model}, промпт v${result.promptVersion}`,
+        batch: batched !== null,
+        message:
+          `Текст готовий: ${visibleLength(clean.html)} символів, модель ${result.model}, ` +
+          `промпт v${result.promptVersion}` +
+          (batched !== null ? ' — batch-тариф, −50%' : ' — звичайний виклик'),
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
       });
@@ -511,6 +556,7 @@ export async function generatePostText(
           model: null,
           attempts: 0,
           notes: [],
+          viaBatch: false,
         }
       : null;
 
@@ -518,10 +564,9 @@ export async function generatePostText(
     // describe what the post actually says, not just its topic.
     const image =
       staged ??
-      (await generateImage(
-        { id: post.id, topicTitle, textHtml, scheduledAt: post.scheduledAt },
-        project,
-      ));
+      (await generateImage({ id: post.id, topicTitle, textHtml }, project, {
+        allowBatch: opts.allowBatch === true,
+      }));
     if (image === 'waiting') return 'batched';
 
     const meta: GenerationMeta = {
@@ -555,10 +600,12 @@ export async function generatePostText(
         action: image.kind === 'image_model' ? 'image' : 'svg',
         model: image.model,
         source: 'auto',
+        batch: image.viaBatch,
         message:
           image.kind === 'svg_fallback'
             ? 'Ілюстрація: резервна схема, модель не дала валідного SVG'
-            : `Ілюстрація готова (${image.kind}), модель ${image.model}`,
+            : `Ілюстрація готова (${image.kind}), модель ${image.model}` +
+              (image.viaBatch ? ' — batch-тариф, −50%' : ' — звичайний виклик'),
         detail: image.notes.length > 0 ? image.notes.join('\n') : null,
       });
     }
@@ -696,7 +743,7 @@ export async function postCounts(projectId: string): Promise<Record<string, numb
   return Object.fromEntries(rows.map((r) => [r.status, r.count]));
 }
 
-/** Posts still ahead of their slot — the buffer depth the dashboard reports. */
+/** Пости, які ще стоять у черзі, — глибина буфера для дашборда. */
 export async function upcomingPosts(projectId: string): Promise<Post[]> {
   return db
     .select()
@@ -707,7 +754,7 @@ export async function upcomingPosts(projectId: string): Promise<Post[]> {
         inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
       ),
     )
-    .orderBy(asc(posts.scheduledAt));
+    .orderBy(sql`${posts.scheduledAt} asc nulls last`, sql`${posts.position} asc nulls last`);
 }
 
 export { ChainExhaustedError };

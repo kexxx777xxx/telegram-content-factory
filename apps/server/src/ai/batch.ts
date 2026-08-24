@@ -21,71 +21,15 @@ import { renderPrompt, resolvePrompt } from '../prompts/resolve.js';
 export const BATCH_TURNAROUND_MS = 24 * 3600_000;
 
 /**
- * Мінімальне вікно, у якому чекати на batch ще має сенс.
+ * Скільки чекати на замовлення, перш ніж махнути рукою.
  *
- * 24 години — стеля вендора, а не його звичайний час: наші відповіді приходять
- * за 15 хвилин. Тож поріг рахується не від стелі, а від того, скільки часу
- * лишається на саме очікування після всіх запасів нижче. Поріг «стеля плюс
- * запас» був недосяжним за побудовою: буфер планує рівно `postsBuffer` слотів
- * уперед, і на щогодинному розкладі найдальший слот ближче за добу.
+ * Раніше поріг рахувався від слоту поста: до слоту менше доби — batch
+ * недосяжний. Слотів у постів більше немає (ADR 0009), і це якраз спростило
+ * задачу: пост у буфері не чекає жодної конкретної хвилини, тож єдиний
+ * запобіжник — не тримати замовлення довше за стелю вендора. Прострочене
+ * скасовується, і пост іде звичайним викликом.
  */
-export const BATCH_MIN_WAIT_MS = 2 * 3600_000;
-
-/**
- * Наскільки раніше за слот перестає бути корисним batch **тексту**.
- *
- * Після тексту ще малюється ілюстрація — і, якщо є час, теж через batch. Це і є
- * справжній запобіжник повільного замовлення: не поріг очікування, а момент,
- * коли замовлення скасовується і текст іде звичайним викликом.
- */
-export const BATCH_DEADLINE_MARGIN_MS = 2 * 3600_000;
-
-/** Скільки часу до слоту потрібно, щоб замовляти текст дешево. */
-export const BATCH_MIN_SLACK_MS = BATCH_MIN_WAIT_MS + BATCH_DEADLINE_MARGIN_MS;
-
-/**
- * Те саме для ілюстрації, тільки запас менший.
- *
- * Після зображення лишається дописати рядок у базу — не година роботи, а
- * півхвилини. Півгодини тут це запас на саму публікацію і на те, що остання
- * спроба опитати batch припаде трохи раніше за дедлайн.
- */
-export const BATCH_IMAGE_MARGIN_MS = 30 * 60_000;
-
-/**
- * Скільки часу до слоту потрібно, щоб замовляти ілюстрацію дешево.
- *
- * Менше, ніж для тексту, і це навмисно: коли текст повертається з batch,
- * частину запасу вже витрачено, і поріг рівня тексту зробив би batch для
- * зображення так само недосяжним, як щойно був недосяжним batch для тексту.
- */
-export const BATCH_IMAGE_MIN_SLACK_MS = BATCH_MIN_WAIT_MS + BATCH_IMAGE_MARGIN_MS;
-
-/**
- * Whether this action *could* go to the batch tier for this project.
- *
- * The planner needs this before the work starts, not when it runs. Eligibility
- * is decided from the slack left before the slot — and by the time a generation
- * job wakes up at its lead time, that slack is a couple of hours, far under the
- * vendor's day. Asked at planning time instead, the answer is still meaningful,
- * and the job can be started early enough to use the cheap tier.
- */
-export async function canBatch(projectId: string, action: AiAction): Promise<boolean> {
-  const [project] = await db
-    .select({ batchMode: projects.batchMode })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .limit(1);
-  if (project?.batchMode === 'off') return false;
-
-  const chain = await resolveChain(action, projectId);
-  const step = chain?.steps[0];
-  if (!step) return false;
-  if (!providers[step.provider]?.submitBatch) return false;
-
-  const key = await resolveKey(projectId, step.provider, action);
-  return key?.batchEnabled === true;
-}
+export const BATCH_DEADLINE_MS = BATCH_TURNAROUND_MS;
 
 /**
  * Скільки постів максимум їде в одному замовленні.
@@ -118,8 +62,6 @@ export const BATCH_MIN_ITEMS = 2;
 export async function batchCandidates(input: {
   projectId: string;
   action: AiAction;
-  /** Скільки часу до слоту має лишатись, щоб чекати на дешевий тариф. */
-  minSlackMs: number;
   /** `true` — потрібен уже готовий текст (крок ілюстрації), `false` — навпаки. */
   needsText: boolean;
   limit: number;
@@ -147,11 +89,13 @@ export async function batchCandidates(input: {
         isNotNull(posts.topicTitle),
         input.needsText ? isNotNull(posts.textHtml) : isNull(posts.textHtml),
         input.needsText ? isNull(posts.imagePath) : sql`true`,
-        gte(posts.scheduledAt, new Date(Date.now() + input.minSlackMs)),
+        // Закріплений часом пост може вийти вже за годину — доба очікування
+        // йому не по кишені. Черга ж не чекає нічого конкретного.
+        isNull(posts.scheduledAt),
         notBatchedYet,
       ),
     )
-    .orderBy(asc(posts.scheduledAt))
+    .orderBy(sql`${posts.position} asc nulls last`, asc(posts.createdAt))
     .limit(input.limit);
 }
 
@@ -239,6 +183,7 @@ export async function submitBatch(input: BatchSubmitInput): Promise<BatchJob[]> 
       model: step.model,
       keyLabel: key.label,
       source: 'auto',
+      batch: true,
       message: `Відправлено в batch (−50% ціни, до 24 год), запитів: ${items.length} — ${handle.name}`,
     });
     logger.info(
@@ -326,6 +271,7 @@ export async function collectBatch(jobId: string): Promise<BatchOutcome | null> 
       action: row.action,
       model: row.model,
       source: 'auto',
+      batch: true,
       message:
         state === 'succeeded'
           ? `Batch завершився за ${row.model}`
@@ -415,6 +361,7 @@ export async function abandonExpired(): Promise<number> {
       action: job.action,
       model: job.model,
       source: 'auto',
+      batch: true,
       message: 'Batch не встиг до дедлайну — скасовано, генерація піде звичайним викликом',
       ok: false,
     });

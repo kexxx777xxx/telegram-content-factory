@@ -173,7 +173,7 @@ jobsRouter.post('/jobs/purge', async (req, res) => {
 });
 
 jobsRouter.get('/dashboard', async (_req, res) => {
-  res.json(await getDashboard(env.PUBLISH_GRACE_MINUTES));
+  res.json(await getDashboard());
 });
 
 /** Runs a backup now and reports where it went. */

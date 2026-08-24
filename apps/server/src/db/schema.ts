@@ -4,7 +4,6 @@ import {
   IMAGE_MODES,
   JOB_STATUSES,
   JOB_TYPES,
-  MISS_POLICIES,
   BATCH_MODES,
   BATCH_STATES,
   LOG_KINDS,
@@ -37,7 +36,6 @@ import {
 export const projectStatusEnum = pgEnum('project_status', PROJECT_STATUSES);
 export const imageModeEnum = pgEnum('image_mode', IMAGE_MODES);
 export const publishModeEnum = pgEnum('publish_mode', PUBLISH_MODES);
-export const missPolicyEnum = pgEnum('miss_policy', MISS_POLICIES);
 export const batchModeEnum = pgEnum('batch_mode', BATCH_MODES);
 export const postStatusEnum = pgEnum('post_status', POST_STATUSES);
 export const postSourceEnum = pgEnum('post_source', POST_SOURCES);
@@ -96,12 +94,10 @@ export const projects = pgTable(
     imageMode: imageModeEnum('image_mode').notNull().default('svg'),
     publishMode: publishModeEnum('publish_mode').notNull().default('auto'),
 
-    /** 0 = just-in-time: nothing is generated before the slot arrives. */
+    /** Скільки постів тримати готовими. 0 = писати в момент публікації. */
     postsBuffer: integer('posts_buffer').notNull().default(3),
     /** 0 = no topic bank; a topic is requested from the model per post. */
     topicsBufferMin: integer('topics_buffer_min').notNull().default(10),
-    leadTimeMinutes: integer('lead_time_minutes').notNull().default(180),
-    missPolicy: missPolicyEnum('miss_policy').notNull().default('publish_late'),
 
     /** Target post length; reaches the text prompt as {{maxChars}}. */
     postMaxChars: integer('post_max_chars').notNull().default(1024),
@@ -282,12 +278,21 @@ export const posts = pgTable(
     status: postStatusEnum('status').notNull().default('planned'),
 
     /**
-     * Null while the post is still an `idea`: a subject with no slot yet.
-     * That nullability is the whole difference between the two — everything
-     * else about an idea and a scheduled post is identical, which is why they
-     * are one table rather than two.
+     * Закріплений час — і тільки він.
+     *
+     * Раніше тут стояла хвилина, яку планувальник роздавав кожному посту
+     * наперед; пост, що не встиг до своєї хвилини, втрачав її назавжди
+     * (ADR 0009). Тепер це поле заповнене лише тоді, коли час обрала людина:
+     * «саме цей пост і саме о цій годині». У решти постів воно порожнє, а
+     * черга рухається за розкладом проєкту.
      */
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+    /**
+     * Ручний пріоритет у черзі: менше — раніше. NULL — «мені все одно», такі
+     * пости беруться у випадковому порядку, щоб канал не читався як список,
+     * згенерований одним заходом.
+     */
+    position: integer('position'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
 
     /** What the post is about. Present from the idea stage onwards. */
@@ -322,9 +327,11 @@ export const posts = pgTable(
   (t) => [
     index('posts_due_idx').on(t.status, t.scheduledAt),
     index('posts_project_idx').on(t.projectId, t.status, t.scheduledAt),
+    /** Порядок черги: за ним публікатор щоразу обирає наступний пост. */
+    index('posts_queue_idx').on(t.projectId, t.status, t.position),
     /*
-     * Ideas carry no slot, and Postgres treats every NULL as distinct, so any
-     * number of them coexist here while two real slots still cannot.
+     * Закріплений час — рівно один пост на хвилину. Постів без закріплення тут
+     * скільки завгодно: Postgres вважає кожен NULL окремим значенням.
      */
     uniqueIndex('posts_slot_uniq').on(t.projectId, t.scheduledAt),
     /*
@@ -530,6 +537,14 @@ export const logs = pgTable(
     message: text('message').notNull(),
     /** The bulky part: rendered prompt or raw model output. */
     detail: text('detail'),
+    /**
+     * Чи стосується запис дешевого batch-тарифу.
+     *
+     * Окрема колонка, а не пошук слова «batch» у тексті: повідомлення пишуться
+     * для людини й переформульовуються, а «покажи лише те, що пішло дешево» —
+     * питання, на яке фільтр має відповідати точно.
+     */
+    batch: boolean('batch').notNull().default(false),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
     durationMs: integer('duration_ms'),

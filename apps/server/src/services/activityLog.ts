@@ -44,6 +44,8 @@ export interface LogInput {
   message: string;
   detail?: string | null;
   action?: AiAction | null;
+  /** `true` — запис про роботу на batch-тарифі. Фільтр журналу читає саме це. */
+  batch?: boolean;
   model?: string | null;
   keyLabel?: string | null;
   source?: LogSource | null;
@@ -68,6 +70,7 @@ export async function record(input: LogInput): Promise<void> {
       postId: input.postId ?? null,
       kind: input.kind,
       action: input.action ?? null,
+      batch: input.batch ?? false,
       model: input.model ?? null,
       keyLabel: input.keyLabel ?? null,
       source: input.source ?? null,
@@ -94,6 +97,7 @@ function toEntry(row: typeof logs.$inferSelect): LogEntry {
     source: row.source,
     message: row.message,
     detail: row.detail,
+    batch: row.batch,
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
     durationMs: row.durationMs,

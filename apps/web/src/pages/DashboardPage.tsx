@@ -137,11 +137,10 @@ export function DashboardPage() {
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="SLO за 7 днів" hint="KPI «0% збоїв» із PRD недосяжний як формулювання; це те, що можна виміряти.">
+        <Card title="SLO за 7 днів" hint="«Вчасно / із запізненням» звідси зникло разом із хвилиною, приписаною посту: спізнитись більше нема повз що.">
           <div className="space-y-2 text-sm">
-            <Row label="Опубліковано вчасно" value={data.slo.publishedOnTime} tone="green" />
-            <Row label="Із запізненням" value={data.slo.publishedLate} tone="amber" />
-            <Row label="Пропущено слотів" value={data.slo.skipped} tone="red" />
+            <Row label="Опубліковано" value={data.slo.published} tone="green" />
+            <Row label="Зламалось" value={data.slo.failed} tone={data.slo.failed > 0 ? 'red' : 'green'} />
             <Row
               label="Резервних схем"
               value={`${data.slo.fallbackImages} з ${data.slo.totalImages}`}

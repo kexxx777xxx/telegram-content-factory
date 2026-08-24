@@ -17,7 +17,7 @@ import { PostsCard } from '../components/PostsCard';
 import { ProjectJournal } from '../components/ProjectJournal';
 import { Button, Card, Input, Notice, SegmentedControl, Tabs } from '../components/ui';
 
-type Tab = 'basics' | 'posts' | 'schedule' | 'models' | 'telegram';
+type Tab = 'basics' | 'posts' | 'schedule' | 'models' | 'telegram' | 'log';
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'basics', label: 'Огляд' },
@@ -25,6 +25,10 @@ const TABS: { value: Tab; label: string }[] = [
   { value: 'schedule', label: 'Розклад' },
   { value: 'models', label: 'Моделі і промпти' },
   { value: 'telegram', label: 'Telegram' },
+  // Журнал жив у хвості «Огляду», під чотирма картками налаштувань, і туди
+  // доводилось прокручувати саме тоді, коли щось пішло не так. Своя вкладка —
+  // одне натискання замість пошуку.
+  { value: 'log', label: 'Журнал' },
 ];
 
 export function ProjectPage() {
@@ -181,11 +185,19 @@ export function ProjectPage() {
                 section="buffers"
                 onFillBuffer={id ? () => api.fillBuffer(id) : undefined}
               />
-              <ProjectForm value={form} onChange={setForm} mode="edit" section="log" />
             </>
           )}
           <SaveBar saving={saving} saved={saved} isNew={isNew} onSave={() => void save()} />
-          {!isNew && project && <ProjectJournal project={project} />}
+        </>
+      )}
+
+      {!isNew && project && tab === 'log' && (
+        <>
+          {/* Перемикач журналу — тут же: питання «чому порожньо» і відповідь
+              «бо вимкнено» не мають лежати на різних екранах. */}
+          <ProjectForm value={form} onChange={setForm} mode="edit" section="log" />
+          <SaveBar saving={saving} saved={saved} isNew={false} onSave={() => void save()} />
+          <ProjectJournal project={project} />
         </>
       )}
 

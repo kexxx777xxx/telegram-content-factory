@@ -472,29 +472,16 @@ export async function absorbIdea(postId: string, projectId: string): Promise<Pos
 }
 
 /**
- * Hands the next idea its slot — the planner's path.
+ * Найстаріша тема з банку стає постом у черзі.
  *
- * Promoting an existing row is what keeps the two states one entity: the
- * alternative, inserting a fresh post and marking the idea consumed, is exactly
- * the two-row arrangement this merge removed. Returns null when the bank is
- * empty, and the caller creates a bare slot instead.
+ * Той самий рядок, лише зі зміненим статусом: окремий пост плюс «спожита» тема
+ * повернули б дві сутності там, де об'єднання лишило одну, і дедуп-хеш опинився
+ * б не на тому рядку, який його використав.
+ *
+ * `FOR UPDATE SKIP LOCKED` — щоб два планувальники не забрали ту саму тему.
  */
-export async function promoteIdeaToSlot(projectId: string, slot: Date): Promise<Post | null> {
+export async function promoteIdea(projectId: string): Promise<Post | null> {
   return db.transaction(async (tx) => {
-    /*
-     * The slot may already hold a post from an earlier tick — the planner is
-     * idempotent and re-plans the same window every minute. Checking first
-     * keeps `posts_slot_uniq` as the backstop it was meant to be rather than a
-     * routine exception; the index still catches the race between two
-     * instances.
-     */
-    const [taken] = await tx
-      .select({ id: posts.id })
-      .from(posts)
-      .where(and(eq(posts.projectId, projectId), eq(posts.scheduledAt, slot)))
-      .limit(1);
-    if (taken) return null;
-
     const [idea] = await tx
       .select({ id: posts.id })
       .from(posts)
@@ -507,7 +494,7 @@ export async function promoteIdeaToSlot(projectId: string, slot: Date): Promise<
 
     const [promoted] = await tx
       .update(posts)
-      .set({ scheduledAt: slot, status: 'planned', updatedAt: new Date() })
+      .set({ status: 'planned', updatedAt: new Date() })
       .where(eq(posts.id, idea.id))
       .returning();
 

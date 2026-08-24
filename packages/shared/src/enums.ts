@@ -30,23 +30,12 @@ export type PublishMode = (typeof PUBLISH_MODES)[number];
 export const BATCH_MODES = ['partial', 'batch_only', 'off'] as const;
 export type BatchMode = (typeof BATCH_MODES)[number];
 
-/** What to do when a slot arrives and the post is not ready. */
-/**
- * Що робити зі слотом, який пропустили.
- *
- * `publish_last` існує заради одного сценарію: гроші на ключі скінчились, за
- * ніч накопичилось десять невиконаних слотів, і вранці все це разом полетіло б
- * у канал. Читачеві потрібен свіжий пост, а не вчорашня черга.
- */
-export const MISS_POLICIES = ['publish_late', 'publish_last', 'skip'] as const;
-export type MissPolicy = (typeof MISS_POLICIES)[number];
-
 export const SCHEDULE_MODES = ['slots', 'interval'] as const;
 export type ScheduleMode = (typeof SCHEDULE_MODES)[number];
 
 /**
- * idea       — a subject only, no slot; the bank the planner draws from
- * planned    — slot reserved, nothing generated yet
+ * idea       — a subject only, not in the queue yet
+ * planned    — у черзі на публікацію, до моделі ще не зверталися
  * generating — a worker holds it
  * ready      — text + image staged, waiting for its slot
  * awaiting_approval — ready, but publish_mode=approval and no verdict yet
@@ -55,9 +44,9 @@ export type ScheduleMode = (typeof SCHEDULE_MODES)[number];
  */
 export const POST_STATUSES = [
   /**
-   * A subject and nothing else, with no slot yet — what used to be a separate
-   * «topic». It is the same row as every other post: the difference between an
-   * idea and a scheduled post is a `scheduled_at`, not a table.
+   * A subject and nothing else, not yet in the publishing queue — what used to
+   * be a separate «topic». It is the same row as every other post: the
+   * difference between an idea and a queued post is a status, not a table.
    */
   'idea',
   'planned',
@@ -67,6 +56,7 @@ export const POST_STATUSES = [
   'publishing',
   'published',
   'failed',
+  /** Historical: slots used to expire. Nothing produces it any more. */
   'skipped',
 ] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];

@@ -40,9 +40,7 @@ export function LaunchButton({
       setResult(
         launched.job === 'publish_post'
           ? 'У черзі на публікацію'
-          : launched.job === 'generate_post'
-            ? 'Генерується у буфер, у канал не піде'
-            : 'Генерується і одразу піде в канал',
+          : 'Генерується і одразу піде в канал',
       );
       onDone();
     } catch (err) {

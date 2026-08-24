@@ -1,0 +1,1 @@
+ALTER TABLE "logs" ADD COLUMN "batch" boolean DEFAULT false NOT NULL;

@@ -32,8 +32,6 @@ export interface ProjectFormValue {
   publishMode: ProjectInput['publishMode'];
   postsBuffer: number;
   topicsBufferMin: number;
-  leadTimeMinutes: number;
-  missPolicy: ProjectInput['missPolicy'];
   postMaxChars: number;
   batchMode: ProjectInput['batchMode'];
   logEnabled: boolean;
@@ -61,8 +59,6 @@ export function emptyForm(): ProjectFormValue {
     publishMode: 'auto',
     postsBuffer: 3,
     topicsBufferMin: 10,
-    leadTimeMinutes: 180,
-    missPolicy: 'publish_late',
     postMaxChars: TELEGRAM_CAPTION_LIMIT,
     batchMode: 'partial',
     logEnabled: false,
@@ -91,8 +87,6 @@ export function formFromProject(project: ProjectDto): ProjectFormValue {
     publishMode: project.publishMode,
     postsBuffer: project.postsBuffer,
     topicsBufferMin: project.topicsBufferMin,
-    leadTimeMinutes: project.leadTimeMinutes,
-    missPolicy: project.missPolicy,
     postMaxChars: project.postMaxChars,
     batchMode: project.batchMode,
     logEnabled: project.logEnabled,
@@ -139,8 +133,6 @@ function common(form: ProjectFormValue) {
     publishMode: form.publishMode,
     postsBuffer: form.postsBuffer,
     topicsBufferMin: form.topicsBufferMin,
-    leadTimeMinutes: form.leadTimeMinutes,
-    missPolicy: form.missPolicy,
     postMaxChars: form.postMaxChars,
     batchMode: form.batchMode,
     logEnabled: form.logEnabled,
@@ -558,11 +550,11 @@ export function ProjectForm({
       {shows('buffers') && (
       <Card
         title="Буфери"
-        hint="Скільки роботи система робить наперед і що робити зі слотом, який не встиг."
+        hint="Скільки роботи система робить наперед. Пост, який не встиг до слоту, нічого не втрачає: слот належить каналу, а не посту."
       >
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Буфер постів" hint="Скільки слотів готувати наперед.">
+            <Field label="Буфер постів" hint="Скільки готових постів тримати в черзі.">
               <Input
                 type="number"
                 min={0}
@@ -578,36 +570,6 @@ export function ProjectForm({
                 value={value.topicsBufferMin}
                 onChange={(e) => set('topicsBufferMin', Math.max(0, Number(e.target.value) || 0))}
               />
-            </Field>
-
-            <Field label="Запас часу, хвилин" hint="За скільки до слоту починати генерацію.">
-              <Input
-                type="number"
-                min={0}
-                disabled={value.postsBuffer === 0}
-                value={value.leadTimeMinutes}
-                onChange={(e) => set('leadTimeMinutes', Math.max(0, Number(e.target.value) || 0))}
-              />
-            </Field>
-
-            <Field
-              label="Якщо пост не встиг"
-              hint={
-                <>
-                  Стосується слота, який настав, а пост ще не готовий. «Усі прострочені» після
-                  довгого простою — скажімо, коли на ключі скінчились гроші — вивалить у канал усю
-                  чергу за раз; «лише останній» публікує найсвіжіший, а решту позначає пропущеними.
-                </>
-              }
-            >
-              <Select
-                value={value.missPolicy}
-                onChange={(e) => set('missPolicy', e.target.value as never)}
-              >
-                <option value="publish_late">Опублікувати всі прострочені</option>
-                <option value="publish_last">Опублікувати лише останній прострочений</option>
-                <option value="skip">Пропустити слот</option>
-              </Select>
             </Field>
 
             <Field
@@ -643,9 +605,10 @@ export function ProjectForm({
           {value.postsBuffer === 0 && (
             <Notice>
               <strong>Буфер 0 — режим «генерувати в момент публікації».</strong> Нічого не
-              готується наперед, тож слот залежить від доступності моделі саме в цю хвилину. При
-              вичерпаній квоті пост поїде із запізненням або буде пропущений — залежно від політики
-              вище. Для стабільності тримайте буфер ≥ 1.
+              готується наперед, тож пост залежить від доступності моделі саме в цю хвилину. При
+              вичерпаній квоті слот просто лишиться порожнім, а пост поїде в наступний. Дешевий
+              batch у цьому режимі недосяжний: чекати добу нікуди. Для стабільності тримайте
+              буфер ≥ 1.
             </Notice>
           )}
 

@@ -141,6 +141,20 @@
       "when": 1786436728218,
       "tag": "0019_dear_exodus",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787557462139,
+      "tag": "0020_jazzy_blade",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787558724151,
+      "tag": "0021_happy_alice",
+      "breakpoints": true
     }
   ]
 }

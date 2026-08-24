@@ -14,6 +14,7 @@ import type {
   LogEntry,
   ProjectDto,
   ProjectInput,
+  PostDto,
   PostsPage,
   ProjectUpdate,
   ReplenishReportDto,
@@ -96,7 +97,7 @@ export interface DashboardData {
     budget: number | null;
   }[];
   slo: {
-    publishedOnTime: number; publishedLate: number; skipped: number;
+    published: number; failed: number;
     fallbackImages: number; totalImages: number;
   };
 }
@@ -108,8 +109,7 @@ export interface JobsPage {
 
 export interface LaunchResult {
   postId: string;
-  job: 'publish_post' | 'generate_and_publish' | 'generate_post';
-  created: boolean;
+  job: 'publish_post' | 'generate_and_publish';
 }
 
 export const api = {
@@ -194,7 +194,14 @@ export const api = {
 
   listPosts: (projectId: string) => request<PostsPage>(`/projects/${projectId}/posts`),
   updatePost: (postId: string, textHtml: string) =>
-    request<unknown>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify({ textHtml }) }),
+    request<PostDto>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify({ textHtml }) }),
+  /**
+   * Місце поста в черзі. `null` — прибрати (пріоритет чи закріплення),
+   * відсутнє поле — не чіпати.
+   */
+  updatePostQueue: (postId: string, patch: { position?: number | null; scheduledAt?: string | null }) =>
+    request<PostDto>(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  bumpPost: (postId: string) => request<PostDto>(`/posts/${postId}/bump`, { method: 'POST' }),
   postLog: (postId: string) => request<LogEntry[]>(`/posts/${postId}/logs`),
   projectLog: (projectId: string, scope: 'project' | 'all' = 'project') =>
     request<LogEntry[]>(`/projects/${projectId}/log?scope=${scope}`),

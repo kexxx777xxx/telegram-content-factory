@@ -162,11 +162,11 @@ export async function sendApprovalCard(postId: string): Promise<boolean> {
   const chatId = row.project.adminChatId ?? config.adminUserIds[0];
   if (!chatId) return false;
 
-  // A post awaiting approval always has a slot, but the column is nullable now
-  // that ideas share the table — say so rather than assert.
+  // Час є лише в закріпленого поста; решта йде в найближчий слот розкладу, і
+  // назвати конкретну хвилину чесно не можна.
   const slot = row.post.scheduledAt
     ? row.post.scheduledAt.toLocaleString('uk-UA', { timeZone: row.project.timezone })
-    : 'без слоту';
+    : 'у черзі';
   // З хештегами: картка показує пост таким, яким він піде в канал, а не текст
   // без хвоста, який дописується вже при відправці.
   const preview = withHashtags(row.post.textHtml ?? '', row.project.hashtags).slice(0, 700);

@@ -4,6 +4,9 @@ import { DateTime } from 'luxon';
 /**
  * Slot arithmetic, done in the project's own timezone.
  *
+ * Слот — це момент, у який канал говорить, а не власність конкретного поста
+ * (ADR 0009). Хто саме поїде в цей слот, вирішує черга в `publisher.ts`.
+ *
  * Everything here is wall-clock: "09:00" means nine in the morning where the
  * channel's audience lives, not nine UTC. That is also why DST has to be dealt
  * with rather than ignored — twice a year a slot either does not exist or
@@ -95,6 +98,27 @@ function atWallClock(day: DateTime, time: string): DateTime | null {
 
   const at = day.set({ hour, minute, second: 0, millisecond: 0 });
   return at.isValid ? at : null;
+}
+
+/**
+ * Слот, у який проєкт має заговорити просто зараз, — або `null`.
+ *
+ * Розклад тепер не роздає хвилини постам, а лише відповідає на одне питання:
+ * чи настав момент, коли черга рухається. Момент — це перший слот після
+ * попередньої публікації; якщо він уже позаду, час говорити.
+ *
+ * Пропущені слоти зникають самі, без політики: скільки б їх не накопичилось за
+ * ніч простою, повертається рівно один, і наступний з'явиться лише після того,
+ * як цей буде використаний. Тому черга ніколи не вивалюється в канал одразу.
+ */
+export function dueSlot(
+  schedule: Schedule,
+  timezone: string,
+  since: Date,
+  now = new Date(),
+): Date | null {
+  const [next] = computeSlots(schedule, timezone, since, 1);
+  return next && next <= now ? next : null;
 }
 
 /**

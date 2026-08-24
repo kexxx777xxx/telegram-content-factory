@@ -27,7 +27,6 @@ import {
   abandonExpired,
   BATCH_MAX_ITEMS,
   BATCH_MIN_ITEMS,
-  BATCH_MIN_SLACK_MS,
   batchCandidates,
   submitBatch,
 } from '../src/ai/batch.js';
@@ -294,30 +293,24 @@ describe('batch tier', () => {
      * відсіюються ті, кому це не підходить.
      */
     const project = await makeProject();
-    const far = new Date(Date.now() + 8 * 3600_000);
 
     const [first] = await db
       .insert(posts)
       .values([
-        { projectId: project.id, status: 'planned', scheduledAt: far, topicTitle: 'Раз' },
-        {
-          projectId: project.id,
-          status: 'planned',
-          scheduledAt: new Date(far.getTime() + 3600_000),
-          topicTitle: 'Два',
-        },
-        // Слот за півгодини — чекати на дешевий тариф уже нікуди.
+        { projectId: project.id, status: 'planned', position: 1, topicTitle: 'Раз' },
+        { projectId: project.id, status: 'planned', position: 2, topicTitle: 'Два' },
+        // Закріплений на конкретну хвилину — доба очікування йому не по кишені.
         {
           projectId: project.id,
           status: 'planned',
           scheduledAt: new Date(Date.now() + 30 * 60_000),
-          topicTitle: 'Близький',
+          topicTitle: 'Закріплений',
         },
         // Текст уже є — цей крок для нього пройдено.
         {
           projectId: project.id,
           status: 'planned',
-          scheduledAt: new Date(far.getTime() + 2 * 3600_000),
+          position: 3,
           topicTitle: 'Готовий',
           textHtml: '<b>є</b>',
         },
@@ -327,7 +320,6 @@ describe('batch tier', () => {
     const candidates = await batchCandidates({
       projectId: project.id,
       action: 'post_text',
-      minSlackMs: BATCH_MIN_SLACK_MS,
       needsText: false,
       limit: BATCH_MAX_ITEMS,
     });
@@ -348,19 +340,61 @@ describe('batch tier', () => {
       model: 'gemini-3.5-flash',
       providerName: 'batches/x',
       state: 'pending',
-      deadline: far,
+      deadline: new Date(Date.now() + 8 * 3600_000),
     });
 
     const after = await batchCandidates({
       projectId: project.id,
       action: 'post_text',
-      minSlackMs: BATCH_MIN_SLACK_MS,
       needsText: false,
       limit: BATCH_MAX_ITEMS,
     });
     expect(after.map((c) => c.topicTitle)).toEqual(['Два']);
     // А один кандидат — це вже не замовлення.
     expect(after.length).toBeLessThan(BATCH_MIN_ITEMS);
+  });
+
+  it('збирає замовлення і на ілюстрації, а не лише на текст', async () => {
+    /*
+     * Найдорожчий крок у пості — саме малювання, і саме він найдовше платив
+     * повну ціну. Умова тут інша, ніж для тексту: потрібен уже готовий текст і
+     * ще не намальована картинка. Такий стан існує масово тільки тому, що
+     * відповідь текстового замовлення розкладається по всіх постах одразу.
+     */
+    const project = await makeProject();
+    await db.insert(posts).values([
+      { projectId: project.id, status: 'planned', position: 1, topicTitle: 'Раз', textHtml: '<b>1</b>' },
+      { projectId: project.id, status: 'planned', position: 2, topicTitle: 'Два', textHtml: '<b>2</b>' },
+      // Картинка вже є — цей крок для нього пройдено.
+      {
+        projectId: project.id,
+        status: 'planned',
+        position: 3,
+        topicTitle: 'Намальований',
+        textHtml: '<b>3</b>',
+        imagePath: '/tmp/x.png',
+      },
+      // Тексту ще немає — малювати нема до чого.
+      { projectId: project.id, status: 'planned', position: 4, topicTitle: 'Без тексту' },
+      // Закріплений часом: доба очікування йому не по кишені.
+      {
+        projectId: project.id,
+        status: 'planned',
+        scheduledAt: new Date(Date.now() + 30 * 60_000),
+        topicTitle: 'Закріплений',
+        textHtml: '<b>з</b>',
+      },
+    ]);
+
+    const candidates = await batchCandidates({
+      projectId: project.id,
+      action: 'svg',
+      needsText: true,
+      limit: BATCH_MAX_ITEMS,
+    });
+
+    expect(candidates.map((c) => c.topicTitle)).toEqual(['Раз', 'Два']);
+    expect(candidates.length).toBeGreaterThanOrEqual(BATCH_MIN_ITEMS);
   });
 
   it('abandons a job past its deadline so the slot can be generated normally', async () => {
@@ -526,155 +560,71 @@ describe('the posts list', () => {
   });
 });
 
-describe('batch reaches the buffer at all', () => {
+describe('генерація буфера стартує одразу', () => {
   /*
-   * The defect this pins down: eligibility for the batch tier is decided from
-   * the slack left before the slot, but the check ran inside the generation
-   * job — which the planner scheduled for `leadTimeMinutes` (3h) before that
-   * slot. Three hours of slack against the threshold is always "no", so
-   * batching for post text never happened once on a buffered project.
+   * Спадок дефекту, який тут і ловився: право на дешевий batch рахувалось із
+   * запасу до слоту, а перевірка жила всередині джоби генерації — яку
+   * планувальник ставив за `leadTimeMinutes` (3 год) до того слоту. Три години
+   * проти доби — це завжди «ні», тож batch для тексту не траплявся жодного разу.
+   *
+   * Слотів у постів більше немає, і питання зникло разом із ними: пост у буфері
+   * не чекає жодної хвилини, тож генерація починається одразу.
    */
-  async function makeBatchKey(batchEnabled: boolean) {
-    await db.insert(apiKeys).values({
-      provider: 'gemini',
-      label: batchEnabled ? 'paid' : 'free',
-      secretEnc: encryptSecret('secret'),
-      isDefault: true,
-      batchEnabled,
-    });
-  }
+  it('ставить джобу на зараз, а не на «запас часу до слоту»', async () => {
+    await ensureDefaultPrompts();
+    const project = await makeProject({ postsBuffer: 7, status: 'active' });
+    await ensureDefaultChains();
 
-  async function firstGenerateJob(projectId: string) {
-    const [job] = await db
+    await planTick();
+
+    const generateJobs = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.projectId, projectId), eq(jobs.type, 'generate_post')))
-      .orderBy(jobs.runAfter)
-      .limit(1);
-    return job;
-  }
+      .where(and(eq(jobs.projectId, project.id), eq(jobs.type, 'generate_post')));
 
-  it('starts far-off posts immediately when the key can batch', async () => {
-    await ensureDefaultPrompts();
-    await makeBatchKey(true);
-    // Seven daily slots: every one past the first is well over the threshold
-    // the batch tier needs.
-    const project = await makeProject({ postsBuffer: 7, leadTimeMinutes: 180, status: 'active' });
-    await ensureDefaultChains();
-
-    await planTick();
-
-    const job = await firstGenerateJob(project.id);
-    expect(job).toBeDefined();
-    // Immediately — within the 15-minute spread that keeps projects sharing a
-    // slot from firing in the same second — rather than three hours before a
-    // slot that is days away.
-    const waitMinutes = (job!.runAfter.getTime() - Date.now()) / 60_000;
-    expect(waitMinutes).toBeLessThan(16);
-    // And well before the batch window would have closed.
-    expect(job!.runAfter.getTime()).toBeLessThan(Date.now() + BATCH_MIN_SLACK_MS);
+    expect(generateJobs).toHaveLength(7);
+    // Одразу — у межах 15-хвилинного розкиду, який розводить проєкти, що
+    // діляться однією хвилиною.
+    for (const job of generateJobs) {
+      expect((job.runAfter.getTime() - Date.now()) / 60_000).toBeLessThan(16);
+    }
   });
 
-  it('щогодинний розклад із малим буфером теж дотягується до batch', async () => {
-    /*
-     * Той самий дефект, але з боку, який жоден тест не ловив: поріг у 26 годин
-     * перевищував увесь горизонт планування. Буфер створює рівно `postsBuffer`
-     * слотів, тож на розкладі «щогодини» з буфером 20 найдальший слот — за 20
-     * годин, і жоден пост ніколи не проходив умову. Тут перевіряється не число,
-     * а те, що воно лишається меншим за реальний горизонт буфера.
-     */
+  it('наповнює буфер до глибини, а не до кінця розкладу', async () => {
     await ensureDefaultPrompts();
-    await makeBatchKey(true);
-    const project = await makeProject({
-      postsBuffer: 20,
-      leadTimeMinutes: 180,
-      status: 'active',
-      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
-    });
+    const project = await makeProject({ postsBuffer: 3, status: 'active' });
     await ensureDefaultChains();
 
     await planTick();
-
-    const job = await firstGenerateJob(project.id);
-    expect(job).toBeDefined();
-    expect((job!.runAfter.getTime() - Date.now()) / 60_000).toBeLessThan(16);
-  });
-
-  it('keeps the lead time when the project turned batch off', async () => {
-    // The key can batch; the project said not to. Without this the mode was a
-    // label on a form — the planner would still start the post days early to
-    // wait for a batch that the generation step then refuses to submit.
-    await ensureDefaultPrompts();
-    await makeBatchKey(true);
-    const project = await makeProject({
-      postsBuffer: 7,
-      leadTimeMinutes: 180,
-      status: 'active',
-      batchMode: 'off',
-    });
-    await ensureDefaultChains();
-
+    // Другий захід нічого не додає: буфер уже повний.
     await planTick();
 
-    const job = await firstGenerateJob(project.id);
-    expect(job).toBeDefined();
-    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
-  });
-
-  it('keeps the lead time when the key cannot batch', async () => {
-    await ensureDefaultPrompts();
-    await makeBatchKey(false);
-    const project = await makeProject({ postsBuffer: 7, leadTimeMinutes: 180, status: 'active' });
-    await ensureDefaultChains();
-
-    await planTick();
-
-    const job = await firstGenerateJob(project.id);
-    expect(job).toBeDefined();
-    // Nothing to gain by generating days early without the cheap tier.
-    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+    const rows = await db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.projectId, project.id), eq(posts.status, 'planned')));
+    expect(rows).toHaveLength(3);
+    // І жодної хвилини нікому не роздано.
+    expect(rows.every((r) => r.scheduledAt === null)).toBe(true);
   });
 });
 
 describe('зміна розкладу', () => {
-  it('переставляє ще не опубліковані пости на нові слоти', async () => {
+  it('не переписує пости: новий розклад діє з наступного слоту', async () => {
     /*
-     * Без цього канал якийсь час живе за двома розкладами: нові слоти
-     * рахуються по-новому, а два десятки вже запланованих постів виходять у
-     * старі години — тобто «перевів канал на вечір» починало діяти лише за
-     * добу-дві.
+     * Раніше зміна розкладу переставляла хвилини двох десятків постів, бо
+     * інакше канал жив за двома розкладами одразу. Тепер переставляти нічого:
+     * хвилина належить каналу, а не посту, тож новий розклад діє з наступного
+     * слоту сам собою (ADR 0009).
      */
     const project = await makeProject({
       schedule: { mode: 'slots', slots: ['09:00'], weekdays: [] },
       timezone: 'UTC',
     });
-    const day = 24 * 3600_000;
-    const rows = await db
-      .insert(posts)
-      .values([
-        {
-          projectId: project.id,
-          status: 'ready',
-          scheduledAt: new Date(Date.now() + day),
-          topicTitle: 'Перший',
-          textHtml: '<b>1</b>',
-        },
-        {
-          projectId: project.id,
-          status: 'planned',
-          scheduledAt: new Date(Date.now() + 2 * day),
-          topicTitle: 'Другий',
-        },
-        // Уже опублікований лишається там, де вийшов: переписувати історію нема
-        // сенсу й нема як — пост у каналі вже стоїть.
-        {
-          projectId: project.id,
-          status: 'published',
-          scheduledAt: new Date(Date.now() - day),
-          topicTitle: 'Старий',
-        },
-      ])
-      .returning();
+    await db.insert(posts).values([
+      { projectId: project.id, status: 'ready', position: 1, topicTitle: 'Перший', textHtml: '<b>1</b>' },
+      { projectId: project.id, status: 'planned', position: 2, topicTitle: 'Другий' },
+    ]);
 
     const updated = await updateProject(project.id, {
       schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
@@ -683,60 +633,31 @@ describe('зміна розкладу', () => {
 
     const after = await db.select().from(posts).where(eq(posts.projectId, project.id));
     const byTopic = new Map(after.map((p) => [p.topicTitle, p]));
-
-    const expected = computeSlots(
-      { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
-      'UTC',
-      new Date(),
-      2,
-    );
-    expect(byTopic.get('Перший')!.scheduledAt!.getTime()).toBe(expected[0]!.getTime());
-    expect(byTopic.get('Другий')!.scheduledAt!.getTime()).toBe(expected[1]!.getTime());
-    // Зміст лишився на місці — переставляли час, а не пости.
+    // Пости не зрушили ні часом, ні порядком, ні змістом.
+    expect(byTopic.get('Перший')!.scheduledAt).toBeNull();
+    expect(byTopic.get('Перший')!.position).toBe(1);
     expect(byTopic.get('Перший')!.textHtml).toBe('<b>1</b>');
-    // Опублікований не рухався.
-    expect(byTopic.get('Старий')!.scheduledAt!.getTime()).toBe(
-      rows.find((r) => r.topicTitle === 'Старий')!.scheduledAt!.getTime(),
-    );
+    expect(byTopic.get('Другий')!.position).toBe(2);
   });
 
-  it('посуває джобу генерації разом зі слотом', async () => {
-    // Джоба прив'язана до старого слоту своїм `run_after`: пост, що поїхав на
-    // день пізніше, згенерувався б за старим часом і чекав добу готовим.
+  it('закріплений час переживає зміну розкладу', async () => {
+    // Хвилину обрала людина — розклад до неї не має стосунку.
+    const pinned = new Date(Date.now() + 5 * 3600_000);
     const project = await makeProject({
       schedule: { mode: 'slots', slots: ['09:00'], weekdays: [] },
       timezone: 'UTC',
-      leadTimeMinutes: 60,
     });
     const [post] = await db
       .insert(posts)
-      .values({
-        projectId: project.id,
-        status: 'planned',
-        scheduledAt: new Date(Date.now() + 10 * 24 * 3600_000),
-        topicTitle: 'Далекий',
-      })
+      .values({ projectId: project.id, status: 'ready', scheduledAt: pinned, textHtml: '<b>1</b>' })
       .returning();
-    await enqueue({
-      type: 'generate_post',
-      projectId: project.id,
-      payload: { postId: post!.id },
-      runAfter: new Date(Date.now() + 9 * 24 * 3600_000),
-      dedupeKey: `post:${post!.id}:generate`,
-    });
 
     await updateProject(project.id, {
       schedule: { mode: 'interval', intervalMinutes: 60, anchor: '08:00' },
     });
 
     const [after] = await db.select().from(posts).where(eq(posts.id, post!.id));
-    const [job] = await db
-      .select()
-      .from(jobs)
-      .where(eq(jobs.dedupeKey, `post:${post!.id}:generate`));
-
-    expect(after!.scheduledAt!.getTime()).toBeLessThan(Date.now() + 2 * 3600_000);
-    expect(job!.runAfter.getTime()).toBeLessThan(after!.scheduledAt!.getTime());
+    expect(after!.scheduledAt!.getTime()).toBe(pinned.getTime());
   });
 });
 
@@ -799,64 +720,135 @@ describe('групове batch-замовлення', () => {
   });
 });
 
-describe('пропущені слоти', () => {
-  it('«лише останній» лишає найсвіжіший, а старші позначає пропущеними', async () => {
-    /*
-     * Сценарій — не гіпотетичний: на ключі скінчились гроші, за ніч набралось
-     * десять невиконаних слотів, гроші поповнили. `publish_late` вивалив би в
-     * канал усю чергу за раз. Читачеві потрібен свіжий пост, а не вчорашня
-     * черга, тож публікується лише останній прострочений.
-     */
-    const project = await makeProject({ status: 'active', missPolicy: 'publish_last' });
-    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+describe('черга публікацій', () => {
+  /*
+   * Те, заради чого модель і змінилась. Раніше кожен пост народжувався з
+   * власною хвилиною: не встиг — політика «пропустити» позначала його
+   * `skipped`, і канал мовчав із повним буфером готових текстів. Тепер слот
+   * належить каналу, а пост стоїть у черзі, доки не вийде.
+   */
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
 
+  it('віддає один пост за слот, скільки б слотів не пройшло', async () => {
+    // Ніч простою: минуло чотири щогодинні слоти, готових постів три. Стара
+    // модель вивалила б у канал усе за раз або спалила б два з трьох.
+    const project = await makeProject({
+      status: 'active',
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '00:00' },
+      timezone: 'UTC',
+    });
+    await db.insert(posts).values([
+      { projectId: project.id, status: 'ready', position: 1, topicTitle: 'Перший', textHtml: '<b>1</b>' },
+      { projectId: project.id, status: 'ready', position: 2, topicTitle: 'Другий', textHtml: '<b>2</b>' },
+      { projectId: project.id, status: 'ready', position: 3, topicTitle: 'Третій', textHtml: '<b>3</b>' },
+      // Остання публікація — чотири години тому.
+      { projectId: project.id, status: 'published', publishedAt: hoursAgo(4), topicTitle: 'Учорашній' },
+    ]);
+
+    const report = await publisherTick();
+
+    expect(report.launched).toBe(1);
+    const queued = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(queued).toHaveLength(1);
+
+    // Жодного поста не позначено пропущеним — черга не має такого способу.
+    const after = await db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.projectId, project.id), eq(posts.status, 'skipped')));
+    expect(after).toHaveLength(0);
+  });
+
+  it('бере пост із меншим пріоритетом', async () => {
+    const project = await makeProject({
+      status: 'active',
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '00:00' },
+      timezone: 'UTC',
+    });
     const rows = await db
       .insert(posts)
       .values([
-        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(5), topicTitle: 'Найстаріший' },
-        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(3), topicTitle: 'Середній' },
-        { projectId: project.id, status: 'ready', scheduledAt: hoursAgo(1), topicTitle: 'Найсвіжіший' },
+        { projectId: project.id, status: 'ready', position: 5, topicTitle: 'Пізніше', textHtml: '<b>5</b>' },
+        { projectId: project.id, status: 'ready', position: 1, topicTitle: 'Раніше', textHtml: '<b>1</b>' },
+        { projectId: project.id, status: 'ready', topicTitle: 'Без пріоритету', textHtml: '<b>—</b>' },
+        { projectId: project.id, status: 'published', publishedAt: hoursAgo(4), topicTitle: 'Учорашній' },
+      ])
+      .returning();
+
+    await publisherTick();
+
+    const [job] = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect((job!.payload as { postId: string }).postId).toBe(
+      rows.find((r) => r.topicTitle === 'Раніше')!.id,
+    );
+  });
+
+  it('закріплений час іде поза чергою і не згорає', async () => {
+    const project = await makeProject({
+      status: 'active',
+      // Розклад, до якого ще години: сам по собі слот не настав.
+      schedule: { mode: 'slots', slots: ['23:59'], weekdays: [] },
+      timezone: 'UTC',
+    });
+    const rows = await db
+      .insert(posts)
+      .values([
+        { projectId: project.id, status: 'ready', position: 1, topicTitle: 'Черга', textHtml: '<b>ч</b>' },
+        // Прострочене закріплення: його ніхто не скасовував, тож воно чинне.
+        {
+          projectId: project.id,
+          status: 'ready',
+          scheduledAt: hoursAgo(2),
+          topicTitle: 'Закріплений',
+          textHtml: '<b>з</b>',
+        },
       ])
       .returning();
 
     const report = await publisherTick();
 
-    expect(report.skipped).toBe(2);
-    expect(report.queued).toBe(1);
-
-    const after = await db.select().from(posts).where(eq(posts.projectId, project.id));
-    const byTopic = new Map(after.map((p) => [p.topicTitle, p.status]));
-    expect(byTopic.get('Найстаріший')).toBe('skipped');
-    expect(byTopic.get('Середній')).toBe('skipped');
-    expect(byTopic.get('Найсвіжіший')).toBe('ready');
-
-    const queuedJobs = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
-    expect(queuedJobs.map((j) => (j.payload as { postId?: string }).postId)).toEqual([
-      rows.find((r) => r.topicTitle === 'Найсвіжіший')!.id,
-    ]);
+    expect(report.pinned).toBe(1);
+    const [job] = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect((job!.payload as { postId: string }).postId).toBe(
+      rows.find((r) => r.topicTitle === 'Закріплений')!.id,
+    );
   });
 
-  it('«всі прострочені» лишає чергу як є', async () => {
-    const project = await makeProject({ status: 'active', missPolicy: 'publish_late' });
+  it('не запускає другий пост, поки перший ще в дорозі', async () => {
+    // Генерація в момент публікації триває хвилини, а тик минає щохвилини.
+    const project = await makeProject({
+      status: 'active',
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '00:00' },
+      timezone: 'UTC',
+    });
     await db.insert(posts).values([
-      {
-        projectId: project.id,
-        status: 'ready',
-        scheduledAt: new Date(Date.now() - 5 * 3600_000),
-        topicTitle: 'Старий',
-      },
-      {
-        projectId: project.id,
-        status: 'ready',
-        scheduledAt: new Date(Date.now() - 3600_000),
-        topicTitle: 'Свіжий',
-      },
+      { projectId: project.id, status: 'ready', position: 1, topicTitle: 'Перший', textHtml: '<b>1</b>' },
+      { projectId: project.id, status: 'ready', position: 2, topicTitle: 'Другий', textHtml: '<b>2</b>' },
+      { projectId: project.id, status: 'published', publishedAt: hoursAgo(4), topicTitle: 'Учорашній' },
     ]);
+
+    await publisherTick();
+    await publisherTick();
+
+    const queued = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(queued).toHaveLength(1);
+  });
+
+  it('порожня черга просто лишає слот невикористаним', async () => {
+    const project = await makeProject({
+      status: 'active',
+      schedule: { mode: 'interval', intervalMinutes: 60, anchor: '00:00' },
+      timezone: 'UTC',
+    });
+    await db
+      .insert(posts)
+      .values({ projectId: project.id, status: 'published', publishedAt: hoursAgo(4) });
 
     const report = await publisherTick();
 
-    expect(report.skipped).toBe(0);
-    expect(report.queued).toBe(2);
+    expect(report.launched).toBe(0);
+    const queued = await db.select().from(jobs).where(eq(jobs.projectId, project.id));
+    expect(queued).toHaveLength(0);
   });
 });
 
@@ -897,8 +889,8 @@ describe('повторний захід генерації', () => {
 describe('launching an idea', () => {
   /*
    * The merge's payoff, stated as a test: an idea needs no special launch path
-   * because it already *is* a post. `launchPost` gives it a slot and runs it,
-   * the same call the list makes for every other row.
+   * because it already *is* a post. `launchPost` moves it into the queue and
+   * runs it, the same call the list makes for every other row.
    */
   async function newIdea(projectId: string, title = 'Тема для запуску') {
     await insertIdeas(projectId, [{ title }], 'manual');
@@ -910,18 +902,19 @@ describe('launching an idea', () => {
     return row!;
   }
 
-  it('is a post already, so launching it only assigns a slot', async () => {
+  it('is a post already, so launching it only changes its status', async () => {
     const project = await makeProject();
     const idea = await newIdea(project.id);
     expect(idea.status).toBe('idea');
-    expect(idea.scheduledAt).toBeNull();
 
     const result = await launchPost(idea.id);
 
     // The same row, not a new one — that is the whole point of one entity.
     expect(result.postId).toBe(idea.id);
     const [after] = await db.select().from(posts).where(eq(posts.id, idea.id)).limit(1);
-    expect(after?.scheduledAt).not.toBeNull();
+    expect(after?.status).toBe('planned');
+    // І жодної вигаданої хвилини: ручний запуск публікує зараз, а не «о 14:07».
+    expect(after?.scheduledAt).toBeNull();
     expect(after?.topicTitle).toBe('Тема для запуску');
     expect(result.job).toBe('generate_and_publish');
   });
@@ -947,7 +940,7 @@ describe('launching an idea', () => {
     await expect(launchPost(idea.id)).rejects.toBeInstanceOf(NotLaunchableError);
   });
 
-  it('keeps the subject when the planner gives it a slot', async () => {
+  it('keeps the subject when the planner moves it into the queue', async () => {
     const project = await makeProject({ status: 'active', postsBuffer: 1 });
     await ensureDefaultPrompts();
     const idea = await newIdea(project.id, 'Тема під планувальник');
@@ -956,7 +949,6 @@ describe('launching an idea', () => {
 
     const [after] = await db.select().from(posts).where(eq(posts.id, idea.id)).limit(1);
     expect(after?.status).toBe('planned');
-    expect(after?.scheduledAt).not.toBeNull();
     expect(after?.topicTitle).toBe('Тема під планувальник');
   });
 });
@@ -1016,12 +1008,7 @@ describe('manual launch', () => {
   ): Promise<string> {
     const [row] = await db
       .insert(posts)
-      .values({
-        projectId,
-        scheduledAt: new Date(Date.now() + 3 * 3600_000),
-        status: 'planned',
-        ...overrides,
-      })
+      .values({ projectId, status: 'planned', ...overrides })
       .returning({ id: posts.id });
     return row!.id;
   }
@@ -1064,38 +1051,41 @@ describe('manual launch', () => {
   it('refuses a post that is already published or in flight', async () => {
     const project = await makeProject();
     const published = await makePost(project.id, { status: 'published' });
-    const running = await makePost(project.id, {
-      status: 'generating',
-      scheduledAt: new Date(Date.now() + 7 * 3600_000),
-    });
+    const running = await makePost(project.id, { status: 'generating' });
 
     await expect(launchPost(published)).rejects.toBeInstanceOf(NotLaunchableError);
     await expect(launchPost(running)).rejects.toBeInstanceOf(NotLaunchableError);
   });
 
-  it('prefers a ready post over an earlier planned one', async () => {
+  it('prefers a ready post over an unwritten one of the same priority', async () => {
+    // Обидва без пріоритету, тож вирішує готовність: у слот краще віддати те,
+    // за що вже заплачено, ніж чекати на модель просто зараз.
     const project = await makeProject();
-    await makePost(project.id, { scheduledAt: new Date(Date.now() + 3600_000) });
-    const ready = await makePost(project.id, {
-      status: 'ready',
-      textHtml: '<b>готово</b>',
-      scheduledAt: new Date(Date.now() + 5 * 3600_000),
-    });
+    await makePost(project.id);
+    const ready = await makePost(project.id, { status: 'ready', textHtml: '<b>готово</b>' });
 
     const result = await launchProject(project.id);
     expect(result.postId).toBe(ready);
     expect(result.job).toBe('publish_post');
   });
 
-  it('creates a slot when the project keeps no buffer', async () => {
-    const project = await makeProject({ postsBuffer: 0 });
+  it('пріоритет випереджає готовність', async () => {
+    const project = await makeProject();
+    const first = await makePost(project.id, { position: 1 });
+    await makePost(project.id, { status: 'ready', textHtml: '<b>готово</b>' });
 
     const result = await launchProject(project.id);
-    expect(result.created).toBe(true);
-    expect(result.job).toBe('generate_and_publish');
+    expect(result.postId).toBe(first);
+  });
 
+  it('відмовляє, коли черга порожня', async () => {
+    // Раніше кнопка вигадувала посту слот і генерувала пост нізвідки. Порожня
+    // черга — це стан, про який оператор має дізнатись, а не отримати пост.
+    const project = await makeProject({ postsBuffer: 0 });
+
+    await expect(launchProject(project.id)).rejects.toBeInstanceOf(NotLaunchableError);
     const rows = await db.select().from(posts).where(eq(posts.projectId, project.id));
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { jobs, posts, projects, type Post } from '../db/schema.js';
 import { logger } from '../logger.js';
@@ -10,14 +10,50 @@ export class NotLaunchableError extends Error {}
 
 export interface LaunchResult {
   postId: string;
-  /** Which path was taken, so the UI can say "публікується" vs "генерується". */
-  job: 'publish_post' | 'generate_and_publish' | 'generate_post';
-  /** True when the slot row was created by this call rather than the planner. */
-  created: boolean;
+  /** Яким шляхом пішов пост, щоб UI не перевиводив це зі статусу. */
+  job: 'publish_post' | 'generate_and_publish';
+}
+
+/** Статуси, з яких пост іще може поїхати в канал. */
+const LAUNCHABLE: Post['status'][] = ['idea', 'planned', 'ready', 'awaiting_approval', 'failed'];
+
+/**
+ * Наступний пост черги — той, що поїде в найближчий слот.
+ *
+ * Порядок читається згори вниз і саме в такому вигляді описаний оператору:
+ *
+ *   1. ручний пріоритет — менше число раніше;
+ *   2. серед рівних — готовий випереджає ненаписаний: у слот краще віддати те,
+ *      за що вже заплачено, ніж чекати на модель просто зараз;
+ *   3. решта — випадково, щоб канал не читався як один згенерований захід
+ *      підряд.
+ *
+ * Закріплені часом пости сюди не потрапляють: у них власний момент, і черга їх
+ * не чіпає.
+ */
+export async function nextInQueue(projectId: string): Promise<Post | null> {
+  const [row] = await db
+    .select()
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, projectId),
+        isNull(posts.scheduledAt),
+        inArray(posts.status, ['idea', 'planned', 'ready']),
+      ),
+    )
+    .orderBy(
+      sql`${posts.position} asc nulls last`,
+      sql`case when ${posts.status} = 'ready' then 0 else 1 end`,
+      sql`random()`,
+    )
+    .limit(1);
+
+  return row ?? null;
 }
 
 /**
- * Runs a post's slot immediately, whatever state it is in.
+ * Runs a post immediately, whatever state it is in.
  *
  * Ready posts go straight to the publisher; unfinished ones take the
  * generate-then-publish path in a single job. That is the same job the
@@ -25,74 +61,36 @@ export interface LaunchResult {
  * post sitting with nothing to publish it.
  */
 export async function launchPost(postId: string): Promise<LaunchResult> {
-  const post = await getPost(postId);
-  return launch(post, false);
+  return launch(await getPost(postId), { source: 'manual' });
 }
 
 /**
- * The project-level launch: takes the nearest unpublished slot, or makes one.
+ * The project-level launch: takes whatever the queue would publish next.
  *
- * A project with `postsBuffer = 0` has no row until its tick creates one, and a
- * paused project has none at all — without creating a slot the button would be
- * dead exactly when it is most useful.
+ * Раніше тут доводилось вигадувати посту слот, якщо жодного не було. Тепер
+ * слоту не існує як власності поста, тож кнопка просто бере голову черги — а
+ * якщо черга порожня, чесно про це каже замість того, щоб створити порожній
+ * рядок і згенерувати пост нізвідки.
  */
 export async function launchProject(projectId: string): Promise<LaunchResult> {
   const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project) throw new NotLaunchableError('Проєкт не знайдено');
 
-  const [next] = await db
-    .select()
-    .from(posts)
-    .where(
-      and(
-        eq(posts.projectId, projectId),
-        inArray(posts.status, ['ready', 'awaiting_approval', 'planned', 'failed', 'idea']),
-      ),
-    )
-    // Ready first: publishing something already paid for beats generating anew.
-    // Spelled out rather than sorting by the enum, whose order is declaration
-    // order and happens to put `planned` ahead of `ready`.
-    .orderBy(
-      sql`case when ${posts.status} in ('ready', 'awaiting_approval') then 0 else 1 end`,
-      asc(posts.scheduledAt),
-    )
-    .limit(1);
+  const next = await nextInQueue(projectId);
+  if (!next) throw new NotLaunchableError('Черга порожня: немає ні готового поста, ні теми');
 
-  if (next) return launch(next, false);
-
-  const [row] = await db
-    .insert(posts)
-    .values({ projectId, scheduledAt: new Date(), status: 'planned' })
-    .returning();
-  if (!row) throw new NotLaunchableError('Не вдалося створити слот');
-
-  const result = await launch(row, true);
-  return { ...result, created: true };
+  return launch(next, { source: 'manual' });
 }
 
-async function launch(post: Post, created: boolean): Promise<LaunchResult> {
+export async function launch(
+  post: Post,
+  opts: { source: 'auto' | 'manual' },
+): Promise<LaunchResult> {
   const log = logger.child({ post_id: post.id, project_id: post.projectId });
+  const manual = opts.source === 'manual';
 
-  /*
-   * An idea has no slot, and a manual run is exactly the moment it earns one.
-   * Since the merge this needs no special path: the row already *is* the post,
-   * so giving it a time is the whole promotion.
-   */
-  if (!post.scheduledAt) {
-    const [scheduled] = await db
-      .update(posts)
-      .set({ scheduledAt: freeSlot(), status: 'planned', updatedAt: new Date() })
-      .where(eq(posts.id, post.id))
-      .returning();
-    if (!scheduled) throw new NotLaunchableError('Не вдалося призначити слот');
-    post = scheduled;
-    created = true;
-  }
-
-  if (post.status === 'published') {
-    throw new NotLaunchableError('Пост уже опубліковано');
-  }
-  if (post.status === 'generating' || post.status === 'publishing') {
+  if (post.status === 'published') throw new NotLaunchableError('Пост уже опубліковано');
+  if (!LAUNCHABLE.includes(post.status)) {
     throw new NotLaunchableError(`Пост уже в роботі: статус «${post.status}»`);
   }
 
@@ -100,54 +98,40 @@ async function launch(post: Post, created: boolean): Promise<LaunchResult> {
     await enqueue({
       type: 'publish_post',
       projectId: post.projectId,
-      payload: { postId: post.id, manual: true },
-      priority: 50,
+      payload: { postId: post.id, manual },
+      priority: manual ? 50 : 20,
       dedupeKey: `post:${post.id}:publish`,
     });
-    log.info('manual publish queued');
-    return { postId: post.id, job: 'publish_post', created };
+    log.info({ source: opts.source }, 'publish queued');
+    return { postId: post.id, job: 'publish_post' };
   }
 
-  // `skipped` is terminal for the scheduler but not for a human decision, and
-  // generation refuses to start from it — so the slot goes back to planned.
-  if (post.status === 'skipped') {
+  // Тема стає постом рівно в цей момент: слот більше не потрібен, потрібен лише
+  // статус, з якого генерація має право початись.
+  if (post.status === 'idea' || post.status === 'failed') {
     await db
       .update(posts)
       .set({ status: 'planned', error: null, updatedAt: new Date() })
       .where(eq(posts.id, post.id));
   }
 
-  // A generate job may already be pending from the buffer's lead time. Leaving
-  // it would let both run: one generates while the other finds the post still
-  // unfinished and fails the publish. Pending jobs are safe to drop — a running
-  // one is not, and the dedupe key protects that case.
+  // A generate job may already be pending from the buffer. Leaving it would let
+  // both run: one generates while the other finds the post still unfinished and
+  // fails the publish. Pending jobs are safe to drop — a running one is not, and
+  // the dedupe key protects that case.
   await db
     .delete(jobs)
-    .where(
-      and(
-        eq(jobs.status, 'pending'),
-        eq(jobs.dedupeKey, `post:${post.id}:generate`),
-      ),
-    );
+    .where(and(eq(jobs.status, 'pending'), eq(jobs.dedupeKey, `post:${post.id}:generate`)));
 
   await enqueue({
     type: 'generate_and_publish',
     projectId: post.projectId,
-    payload: { postId: post.id, manual: true },
-    priority: 40,
+    payload: { postId: post.id, manual },
+    priority: manual ? 40 : 30,
     dedupeKey: `post:${post.id}:generate_publish`,
   });
-  log.info({ status: post.status }, 'manual generate-and-publish queued');
-  return { postId: post.id, job: 'generate_and_publish', created };
-}
-
-/**
- * `posts_slot_uniq` covers `(project_id, scheduled_at)`, so launching two ideas
- * inside the same millisecond would collide. Nudging by a random fraction of a
- * second is enough — the slot time carries no meaning for a manual run.
- */
-function freeSlot(): Date {
-  return new Date(Date.now() + Math.floor(Math.random() * 1000));
+  log.info({ status: post.status, source: opts.source }, 'generate-and-publish queued');
+  return { postId: post.id, job: 'generate_and_publish' };
 }
 
 export { PostNotFoundError };

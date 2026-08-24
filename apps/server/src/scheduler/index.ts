@@ -5,7 +5,6 @@ import { startAdminBot, stopAdminBot } from '../telegram/adminBot.js';
 import { abandonExpired } from '../ai/batch.js';
 import { planTick } from './planner.js';
 import {
-  ensureJitSlots,
   publisherTick,
   reclaimStuckGenerating,
   reclaimStuckPublishing,
@@ -46,9 +45,8 @@ async function safePublisherTick(): Promise<void> {
     await abandonExpired();
     await reclaimStuckPublishing(STUCK_PUBLISHING_MS);
     await reclaimStuckGenerating(STUCK_GENERATING_MS);
-    await ensureJitSlots();
     const report = await publisherTick();
-    if (report.queued > 0 || report.skipped > 0 || report.jit > 0) {
+    if (report.launched > 0) {
       logger.info(report, 'publisher tick');
     }
   } catch (err) {

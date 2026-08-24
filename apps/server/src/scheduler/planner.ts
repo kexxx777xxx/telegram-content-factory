@@ -1,13 +1,11 @@
-import { scheduleSchema } from '@tcf/shared';
-import { and, asc, eq, gt, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, pool } from '../db/client.js';
 import { jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
-import { ideaCounts, needsReplenish, promoteIdeaToSlot, refillCount } from '../services/ideas.js';
-import { computeSlots, projectJitterSeconds } from './slots.js';
-import { BATCH_MIN_SLACK_MS, canBatch } from '../ai/batch.js';
+import { ideaCounts, needsReplenish, promoteIdea, refillCount } from '../services/ideas.js';
+import { projectJitterSeconds } from './slots.js';
 
 /**
  * Arbitrary but fixed: two instances must derive the same lock id to exclude
@@ -102,48 +100,53 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
   let postsPlanned = 0;
   let jobsEnqueued = 0;
 
-  if (project.postsBuffer >= 1) {
-    const schedule = scheduleSchema.parse(project.schedule);
-    const slots = computeSlots(schedule, project.timezone, new Date(), project.postsBuffer);
+  /*
+   * Буфер — це глибина черги, а не набір заброньованих хвилин.
+   *
+   * Раніше тут рахувались слоти на дні вперед і кожному видавався пост; пост,
+   * що не встиг до своєї хвилини, її втрачав. Тепер планувальник відповідає на
+   * одне питання: чи є в черзі стільки постів, скільки просив оператор, — і
+   * дописує різницю. Коли саме кожен із них вийде, вирішить розклад у момент
+   * публікації (ADR 0009).
+   */
+  const missing = project.postsBuffer - (await bufferDepth(project.id));
 
-    for (const slot of slots) {
-      /*
-       * An idea already in the bank *becomes* this slot's post — the same row,
-       * now with a time. Inserting a fresh post and marking the idea consumed
-       * would recreate the two-row arrangement that having one entity removed,
-       * and would leave the subject's dedup hash on a different row than the
-       * post that used it.
-       */
-      let created = await promoteIdeaToSlot(project.id, slot);
+  for (let i = 0; i < missing; i++) {
+    /*
+     * An idea already in the bank *becomes* the queued post — the same row, now
+     * with a status. Inserting a fresh post and marking the idea consumed would
+     * recreate the two-row arrangement that having one entity removed, and
+     * would leave the subject's dedup hash on a different row than the post
+     * that used it.
+     */
+    let created = await promoteIdea(project.id);
 
-      if (!created) {
-        // Bank empty: reserve the slot anyway. Generation asks for a subject
-        // when it runs, so an empty bank delays content, never the schedule.
-        const [bare] = await db
-          .insert(posts)
-          .values({ projectId: project.id, scheduledAt: slot, status: 'planned' })
-          .onConflictDoNothing({ target: [posts.projectId, posts.scheduledAt] })
-          .returning();
-        created = bare ?? null;
-      }
-
-      if (!created) continue;
-      postsPlanned++;
-
-      if (isImplemented('generate_post')) {
-        const enqueued = await enqueue({
-          type: 'generate_post',
-          projectId: project.id,
-          payload: { postId: created.id },
-          runAfter: await generationStart(project, slot),
-          dedupeKey: `post:${created.id}:generate`,
-        });
-        if (enqueued) jobsEnqueued++;
-      }
+    if (!created) {
+      // Bank empty: take the place in the queue anyway. Generation asks for a
+      // subject when it runs, so an empty bank delays content, never the queue.
+      const [bare] = await db
+        .insert(posts)
+        .values({ projectId: project.id, status: 'planned' })
+        .returning();
+      created = bare ?? null;
     }
 
-    if (postsPlanned > 0) log.info({ postsPlanned }, 'slots planned');
+    if (!created) continue;
+    postsPlanned++;
+
+    if (isImplemented('generate_post')) {
+      const enqueued = await enqueue({
+        type: 'generate_post',
+        projectId: project.id,
+        payload: { postId: created.id },
+        runAfter: generationStart(project),
+        dedupeKey: `post:${created.id}:generate`,
+      });
+      if (enqueued) jobsEnqueued++;
+    }
   }
+
+  if (postsPlanned > 0) log.info({ postsPlanned }, 'queue topped up');
 
   if (await needsReplenish(project.id, project.topicsBufferMin)) {
     // Top the bank back up to its minimum rather than adding a fixed handful:
@@ -168,120 +171,20 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
 }
 
 /**
- * Переставляє ще не опубліковані пости на слоти нового розкладу.
+ * Коли починати генерацію поста в буфері.
  *
- * Зміна розкладу без цього означала канал, який деякий час живе за двома
- * розкладами одразу: нові слоти рахуються по-новому, а два десятки вже
- * запланованих постів виходять у старі години, і «перевів канал на вечір»
- * фактично починало діяти лише за добу-дві.
+ * Відповідь — «зараз», зі стабільним зсувом на проєкт: без нього десяток
+ * проєктів вистрілив би своїми викликами в ту саму секунду. Зсув виводиться з
+ * id, а не з випадковості, щоб повторний тик давав те саме `run_after` і
+ * ключ дедупу лишався осмисленим.
  *
- * Переставляється час, не зміст: тема, текст і картинка лишаються на своїх
- * рядках. Порядок теж — найстаріший запланований пост іде в найближчий новий
- * слот, тож черга не перемішується.
+ * Раніше тут був «запас часу до слоту» — і саме він робив дешевий batch
+ * недосяжним: джоба прокидалась за три години до слоту, а замовлення просить
+ * добу. Пост у буфері нікуди не поспішає за визначенням, тож почати одразу —
+ * і дешевше, і швидше наповнює порожню чергу.
  */
-export async function rescheduleFuturePosts(project: Project): Promise<number> {
-  const affected = await db
-    .select()
-    .from(posts)
-    .where(
-      and(
-        eq(posts.projectId, project.id),
-        gt(posts.scheduledAt, new Date()),
-        inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
-      ),
-    )
-    .orderBy(asc(posts.scheduledAt));
-
-  if (affected.length === 0) return 0;
-
-  const schedule = scheduleSchema.parse(project.schedule);
-  const slots = computeSlots(schedule, project.timezone, new Date(), affected.length);
-
-  /*
-   * Слотів може виявитись менше, ніж постів: новий розклад рідший, а вікно
-   * пошуку скінченне. Тоді переставляються перші — лишити пост без часу гірше,
-   * ніж лишити його на старому.
-   */
-  const moving = affected.slice(0, slots.length);
-  if (moving.length === 0) return 0;
-
-  await db.transaction(async (tx) => {
-    /*
-     * Спершу звільняємо старі часи, і лише потім розставляємо нові: слоти
-     * старого й нового розкладів перетинаються, а `posts_slot_uniq` не дасть
-     * двом постам стояти на одній хвилині навіть на мить. Усе в одній
-     * транзакції — обрив посередині не лишить пости без слотів.
-     */
-    await tx
-      .update(posts)
-      .set({ scheduledAt: null, updatedAt: new Date() })
-      .where(
-        inArray(
-          posts.id,
-          moving.map((post) => post.id),
-        ),
-      );
-
-    for (const [index, post] of moving.entries()) {
-      await tx
-        .update(posts)
-        .set({ scheduledAt: slots[index]!, updatedAt: new Date() })
-        .where(eq(posts.id, post.id));
-    }
-  });
-
-  /*
-   * Джоба генерації прив'язана до старого слоту своїм `run_after`. Пост, який
-   * поїхав на день пізніше, згенерувався б за старим часом і чекав добу
-   * готовим; той, що поїхав раніше, — не встиг би зовсім.
-   */
-  for (const [index, post] of moving.entries()) {
-    await db
-      .update(jobs)
-      .set({ runAfter: await generationStart(project, slots[index]!), updatedAt: new Date() })
-      .where(
-        and(
-          eq(jobs.dedupeKey, `post:${post.id}:generate`),
-          inArray(jobs.status, ['pending']),
-        ),
-      );
-  }
-
-  logger.info(
-    { project_id: project.id, moved: moving.length, kept: affected.length - moving.length },
-    'future posts re-timed to the new schedule',
-  );
-
-  return moving.length;
-}
-
-/**
- * When generation should start for a slot.
- *
- * Normally `leadTimeMinutes` before the slot, plus a stable per-project offset.
- * Without the offset, every project sharing a 09:00 slot would fire its model
- * calls in the same second; deriving it from the id rather than randomly keeps a
- * replanning tick producing the same value.
- *
- * The exception is the batch tier, and it is the whole reason this is async.
- * Whether a post can be batched is decided from the slack left before its slot,
- * and that check happens *inside the job*. With a three-hour lead time the job
- * woke up with three hours of slack against a 26-hour threshold — so the answer
- * was always no, and batching for post text never once happened on a buffered
- * project. Starting such a post immediately instead lets it submit the cheap
- * order days ahead and park until the answer arrives, which is also what makes
- * an empty buffer fill up straight away rather than one lead time at a time.
- */
-async function generationStart(project: Project, slot: Date): Promise<Date> {
-  const now = Date.now();
-  const jitter = projectJitterSeconds(project.id) * 1000;
-
-  if (slot.getTime() - now >= BATCH_MIN_SLACK_MS && (await canBatch(project.id, 'post_text'))) {
-    return new Date(now + jitter);
-  }
-
-  const start = new Date(slot.getTime() - project.leadTimeMinutes * 60_000 + jitter);
-  return start.getTime() < now ? new Date() : start;
+function generationStart(project: Project): Date {
+  return new Date(Date.now() + projectJitterSeconds(project.id) * 1000);
 }
 
 /**
@@ -327,7 +230,7 @@ async function enqueueDailyBackup(): Promise<number> {
   return enqueued ? 1 : 0;
 }
 
-/** Posts still waiting for their slot — the buffer depth per project. */
+/** Скільки постів уже стоять у черзі — глибина буфера проєкту. */
 export async function bufferDepth(projectId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -335,8 +238,7 @@ export async function bufferDepth(projectId: string): Promise<number> {
     .where(
       and(
         eq(posts.projectId, projectId),
-        gte(posts.scheduledAt, new Date()),
-        sql`${posts.status} in ('planned','generating','ready','awaiting_approval')`,
+        inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
       ),
     );
   return row?.count ?? 0;

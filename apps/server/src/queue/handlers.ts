@@ -50,12 +50,19 @@ async function handleReplenishTopics({ job, log }: JobContext): Promise<void> {
   }
 }
 
-async function handleGeneratePost({ job, log }: JobContext): Promise<void> {
+/**
+ * @param allowBatch чи має пост добу на дешевий тариф. Буферна джоба — так,
+ * генерація в момент публікації — ні: там уже ніхто не чекає.
+ */
+async function handleGeneratePost(
+  { job, log }: JobContext,
+  allowBatch = true,
+): Promise<void> {
   const postId = (job.payload as { postId?: unknown }).postId;
   if (typeof postId !== 'string') throw new PermanentJobFailure('generate_post без postId');
 
   try {
-    const outcome = await generatePostText(postId);
+    const outcome = await generatePostText(postId, { allowBatch });
     log.info({ postId, outcome }, 'generate_post finished');
 
     if (outcome === 'batched') {
@@ -124,7 +131,7 @@ async function handleGenerateAndPublish(ctx: JobContext): Promise<void> {
 
   // A RescheduleJob thrown by generation propagates, so publishing never runs
   // on a post whose text has not arrived yet.
-  await handleGeneratePost(ctx);
+  await handleGeneratePost(ctx, false);
   await handlePublishPost(ctx);
 }
 

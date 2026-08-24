@@ -111,7 +111,6 @@ async function seedProjects(count: number): Promise<void> {
         imageMode: 'none',
         postsBuffer: 3,
         topicsBufferMin: 0,
-        leadTimeMinutes: 24 * 60,
         // Every project on the same slot — the pile-up this design is about.
         schedule: { mode: 'slots', slots: ['09:00'], weekdays: [] },
       })
@@ -180,8 +179,8 @@ afterAll(async () => {
   await closeDatabase();
 });
 
-describe(`load: ${PROJECT_COUNT} projects sharing one slot`, () => {
-  it('plans every project without double-booking a slot', async () => {
+describe(`load: ${PROJECT_COUNT} projects sharing one schedule`, () => {
+  it('fills every project\'s queue to its depth, once', async () => {
     await seedProjects(PROJECT_COUNT);
 
     const first = await planTick();
@@ -193,12 +192,16 @@ describe(`load: ${PROJECT_COUNT} projects sharing one slot`, () => {
     const second = await planTick();
     expect(second.postsPlanned).toBe(0);
 
-    // Counted by slot, not by row: ideas live in this table too now, so
-    // `count(*)` includes the four seeded per project minus the three promoted.
-    const [{ scheduled }] = await db
-      .select({ scheduled: sql<number>`count(*) filter (where scheduled_at is not null)::int` })
+    // Черга, а не заброньовані хвилини: жодному посту час не роздається.
+    const [{ queued }] = await db
+      .select({ queued: sql<number>`count(*) filter (where status = 'planned')::int` })
       .from(posts);
-    expect(scheduled).toBe(PROJECT_COUNT * 3);
+    expect(queued).toBe(PROJECT_COUNT * 3);
+
+    const [{ pinned }] = await db
+      .select({ pinned: sql<number>`count(*) filter (where scheduled_at is not null)::int` })
+      .from(posts);
+    expect(pinned).toBe(0);
 
     // One idea per project is left over — promotion consumed three of four.
     const [{ ideas }] = await db
