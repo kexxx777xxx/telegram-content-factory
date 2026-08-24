@@ -633,6 +633,92 @@ describe('генерація буфера стартує одразу', () => {
     }
   });
 
+  it('дописує тим, хто вже в черзі, а не створює поруч нових', async () => {
+    /*
+     * Дефект у бою: сотня постів повернулась у чергу після міграції, глибина
+     * «усього в черзі» перевищила буфер, і планувальник вирішив, що роботи
+     * немає. Готових постів при цьому було нуль, джоб — жодної, а канал
+     * дописував пости в момент публікації за повну ціну. Буфер рахується по
+     * **готових**, а рядок без тексту — це місце в черзі, а не зроблена робота.
+     */
+    await ensureDefaultPrompts();
+    const project = await makeProject({ postsBuffer: 2, status: 'active' });
+    await ensureDefaultChains();
+
+    const rows = await db
+      .insert(posts)
+      .values([
+        { projectId: project.id, status: 'planned', position: 1, topicTitle: 'Осиротілий 1' },
+        { projectId: project.id, status: 'planned', position: 2, topicTitle: 'Осиротілий 2' },
+        { projectId: project.id, status: 'planned', position: 3, topicTitle: 'Осиротілий 3' },
+      ])
+      .returning();
+
+    await planTick();
+
+    const generateJobs = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.projectId, project.id), eq(jobs.type, 'generate_post')));
+
+    // Рівно стільки, скільки просив буфер, і саме тим постам, що вже стояли.
+    expect(generateJobs).toHaveLength(2);
+    const targets = generateJobs.map((j) => (j.payload as { postId: string }).postId);
+    expect(targets).toEqual([rows[0]!.id, rows[1]!.id]);
+
+    // І жодного нового рядка поруч із ними.
+    const all = await db.select().from(posts).where(eq(posts.projectId, project.id));
+    expect(all).toHaveLength(3);
+  });
+
+  it('дописує пост із оплаченим замовленням навіть при повному буфері', async () => {
+    /*
+     * Замовлення живе добу, а повний буфер може стояти тижнями. Відповідь, яку
+     * ніхто не забрав, скасовується за дедлайном — гроші витрачено, поста
+     * немає. Ліміт буфера каже, скільки роботи починати, а не скільки
+     * закінчувати.
+     */
+    await ensureDefaultPrompts();
+    const project = await makeProject({ postsBuffer: 1, status: 'active' });
+    await ensureDefaultChains();
+    const [key] = await db
+      .insert(apiKeys)
+      .values({ provider: 'gemini', label: 'paid', secretEnc: encryptSecret('s'), batchEnabled: true })
+      .returning();
+
+    // Буфер уже повний одним готовим постом.
+    await db.insert(posts).values({
+      projectId: project.id,
+      status: 'ready',
+      topicTitle: 'Готовий',
+      textHtml: '<b>є</b>',
+    });
+
+    const [waiting] = await db
+      .insert(posts)
+      .values({ projectId: project.id, status: 'planned', topicTitle: 'Оплачений', textHtml: '<b>т</b>' })
+      .returning();
+    await db.insert(batchJobs).values({
+      projectId: project.id,
+      postId: waiting!.id,
+      apiKeyId: key!.id,
+      action: 'svg',
+      model: 'gemini-3.5-flash',
+      providerName: 'batches/paid',
+      state: 'pending',
+      deadline: new Date(Date.now() + 3600_000),
+    });
+
+    await planTick();
+
+    const generateJobs = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.projectId, project.id), eq(jobs.type, 'generate_post')));
+
+    expect(generateJobs.map((j) => (j.payload as { postId: string }).postId)).toEqual([waiting!.id]);
+  });
+
   it('наповнює буфер до глибини, а не до кінця розкладу', async () => {
     await ensureDefaultPrompts();
     const project = await makeProject({ postsBuffer: 3, status: 'active' });

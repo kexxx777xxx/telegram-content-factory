@@ -1,6 +1,6 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, pool } from '../db/client.js';
-import { jobs, posts, projects, type Project } from '../db/schema.js';
+import { batchJobs, jobs, posts, projects, type Project } from '../db/schema.js';
 import { logger } from '../logger.js';
 import { isImplemented } from '../queue/handlers.js';
 import { enqueue } from '../queue/enqueue.js';
@@ -101,17 +101,49 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
   let jobsEnqueued = 0;
 
   /*
-   * Буфер — це глибина черги, а не набір заброньованих хвилин.
+   * «Буфер постів» означає рівно те, що написано в формі: скільки **готових**
+   * постів тримати. Не скільки рядків стоїть у черзі — рядок без тексту це ще
+   * не зроблена робота, а місце в черзі.
    *
-   * Раніше тут рахувались слоти на дні вперед і кожному видавався пост; пост,
-   * що не встиг до своєї хвилини, її втрачав. Тепер планувальник відповідає на
-   * одне питання: чи є в черзі стільки постів, скільки просив оператор, — і
-   * дописує різницю. Коли саме кожен із них вийде, вирішить розклад у момент
-   * публікації (ADR 0009).
+   * Різниця не теоретична: після повернення в чергу сотні постів, які колись
+   * згоріли, глибина «усього в черзі» перевищила буфер, планувальник вирішив,
+   * що роботи немає, і генерація стала зовсім — при тому, що готових постів
+   * було нуль. Тому рахується саме готове й те, що зараз пишеться.
    */
-  const missing = project.postsBuffer - (await bufferDepth(project.id));
+  const needed = project.postsBuffer - (await readyDepth(project.id));
 
-  for (let i = 0; i < missing; i++) {
+  /*
+   * Спершу дописуємо тим, хто вже в черзі: пост без тексту — це вже прийняте
+   * рішення про тему, і створювати поруч ще один означало б лишити перший
+   * лежати вічно, а буфер наповнювати новими.
+   */
+  const waiting = await db
+    .select({ id: posts.id })
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, project.id),
+        eq(posts.status, 'planned'),
+        isNull(posts.textHtml),
+      ),
+    )
+    .orderBy(sql`${posts.position} asc nulls last`, asc(posts.createdAt))
+    .limit(Math.max(needed, 0));
+
+  for (const post of waiting) {
+    if (!isImplemented('generate_post')) break;
+    const enqueued = await enqueue({
+      type: 'generate_post',
+      projectId: project.id,
+      payload: { postId: post.id },
+      runAfter: generationStart(project),
+      // Ключ дедупу не дасть поставити другу джобу тому, хто вже пишеться.
+      dedupeKey: `post:${post.id}:generate`,
+    });
+    if (enqueued) jobsEnqueued++;
+  }
+
+  for (let i = waiting.length; i < needed; i++) {
     /*
      * An idea already in the bank *becomes* the queued post — the same row, now
      * with a status. Inserting a fresh post and marking the idea consumed would
@@ -143,6 +175,41 @@ async function planProject(project: Project): Promise<{ postsPlanned: number; jo
         dedupeKey: `post:${created.id}:generate`,
       });
       if (enqueued) jobsEnqueued++;
+    }
+  }
+
+  /*
+   * Пост, за який уже заплачено, дописується поза лімітом буфера.
+   *
+   * Замовлення живе добу, а буфер може стояти повним тижнями: відповідь, яку
+   * ніхто не забрав, скасовується за дедлайном — тобто гроші витрачено, а поста
+   * так і немає. Ліміт буфера каже, скільки роботи **починати**, а не скільки
+   * закінчувати.
+   */
+  const paidFor = await db
+    .selectDistinct({ id: posts.id })
+    .from(posts)
+    .innerJoin(batchJobs, eq(batchJobs.postId, posts.id))
+    .where(
+      and(
+        eq(posts.projectId, project.id),
+        eq(posts.status, 'planned'),
+        eq(batchJobs.state, 'pending'),
+      ),
+    );
+
+  for (const post of paidFor) {
+    if (!isImplemented('generate_post')) break;
+    const enqueued = await enqueue({
+      type: 'generate_post',
+      projectId: project.id,
+      payload: { postId: post.id },
+      runAfter: generationStart(project),
+      dedupeKey: `post:${post.id}:generate`,
+    });
+    if (enqueued) {
+      jobsEnqueued++;
+      log.info({ post_id: post.id }, 'post with a paid batch order queued outside the buffer limit');
     }
   }
 
@@ -230,7 +297,7 @@ async function enqueueDailyBackup(): Promise<number> {
   return enqueued ? 1 : 0;
 }
 
-/** Скільки постів уже стоять у черзі — глибина буфера проєкту. */
+/** Скільки постів стоять у черзі — уся прийнята робота, зроблена й ні. */
 export async function bufferDepth(projectId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -239,6 +306,25 @@ export async function bufferDepth(projectId: string): Promise<number> {
       and(
         eq(posts.projectId, projectId),
         inArray(posts.status, ['planned', 'generating', 'ready', 'awaiting_approval']),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+/**
+ * Скільки постів уже готові або пишуться просто зараз.
+ *
+ * Саме це число планувальник порівнює з «буфером постів»: оператор просив
+ * стільки **готових** постів, а не стільки рядків у черзі.
+ */
+async function readyDepth(projectId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(posts)
+    .where(
+      and(
+        eq(posts.projectId, projectId),
+        inArray(posts.status, ['generating', 'ready', 'awaiting_approval']),
       ),
     );
   return row?.count ?? 0;
