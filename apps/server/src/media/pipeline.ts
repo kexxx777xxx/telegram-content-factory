@@ -39,6 +39,12 @@ import { sanitizeSvg, SvgInvalidError } from './svg/sanitize.js';
 /** Long structured output needs more room than the prose default. */
 const SVG_TIMEOUT_MS = 120_000;
 
+/** Обчислює один раз на виклик і віддає той самий результат далі. */
+function memo<T>(fn: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => (pending ??= fn());
+}
+
 /** Пост у тому обсязі, який потрібен ілюстрації. */
 export interface ImagePost {
   id: string;
@@ -124,10 +130,17 @@ async function batchedIllustration(
    */
   const candidates = await batchCandidates({
     projectId: project.id,
+    postId: post.id,
     action,
     needsText: true,
     limit,
   });
+
+  // Те саме, що з текстом: замовлення, у якому немає замовника, лишає його
+  // чекати на відповідь, якої для нього ніхто не просив.
+  if (!candidates.some((candidate) => candidate.id === post.id)) {
+    return noBatch(post, project, action, 'пост не потрапив у власне замовлення');
+  }
 
   if (candidates.length < BATCH_MIN_ITEMS) {
     logger.info(
@@ -325,16 +338,27 @@ async function generateWithImageModel(
   const log = logger.child({ post_id: post.id, project_id: project.id });
   const notes: string[] = [];
 
-  const promptResult = await runChain({
-    action: 'image_prompt',
-    projectId: project.id,
-    postId: post.id,
-    variables: {
-      ...(await projectVariables(project)),
-      topic: post.topicTitle ?? '',
-      postText: stripTags(post.textHtml ?? post.topicTitle ?? ''),
-    },
-  });
+  /*
+   * Опис картинки рахується **ліниво**, і це не мікрооптимізація.
+   *
+   * Виклик стояв тут беззастережно, першим рядком, — а джоба, яка чекає на
+   * batch-відповідь, заходить сюди щочверть години. Тобто за кожне пробудження
+   * платили описом, який потім викидали: 137 викликів на 49 постів за годину,
+   * до семи на один пост. Тепер опис складається лише тоді, коли справді
+   * потрібен: у замовлення або в синхронне малювання.
+   */
+  const ownPrompt = memo(async () =>
+    runChain({
+      action: 'image_prompt',
+      projectId: project.id,
+      postId: post.id,
+      variables: {
+        ...(await projectVariables(project)),
+        topic: post.topicTitle ?? '',
+        postText: stripTags(post.textHtml ?? post.topicTitle ?? ''),
+      },
+    }),
+  );
 
   const chain = await resolveChain('image', project.id);
   if (!chain || chain.steps.length === 0) {
@@ -348,11 +372,11 @@ async function generateWithImageModel(
    * («без тексту на картинці», «вертикальний кадр») — інакше таке доводилось
    * би вписувати в промпт опису й сподіватись, що модель його перекаже.
    */
-  const drawVariables = {
+  const drawVariables = async () => ({
     ...(await projectVariables(project)),
-    imagePrompt: promptResult.text,
+    imagePrompt: (await ownPrompt()).text,
     topic: post.topicTitle ?? '',
-  };
+  });
 
   /*
    * Малювання — найдорожчий виклик у пості, тож і найбільше виграє від
@@ -367,7 +391,7 @@ async function generateWithImageModel(
     allowBatch,
     async (candidate) =>
       candidate.id === post.id
-        ? drawVariables
+        ? drawVariables()
         : {
             ...(await projectVariables(project)),
             topic: candidate.topicTitle ?? '',
@@ -409,7 +433,7 @@ async function generateWithImageModel(
   }
 
   const template = await resolvePrompt('image', project.id, null);
-  const drawPrompt = renderPrompt(template.body, drawVariables);
+  const drawPrompt = renderPrompt(template.body, await drawVariables());
 
   let lastError: LlmError | null = null;
 

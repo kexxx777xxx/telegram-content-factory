@@ -319,6 +319,7 @@ describe('batch tier', () => {
 
     const candidates = await batchCandidates({
       projectId: project.id,
+      postId: first!.id,
       action: 'post_text',
       needsText: false,
       limit: BATCH_MAX_ITEMS,
@@ -345,6 +346,7 @@ describe('batch tier', () => {
 
     const after = await batchCandidates({
       projectId: project.id,
+      postId: first!.id,
       action: 'post_text',
       needsText: false,
       limit: BATCH_MAX_ITEMS,
@@ -362,7 +364,9 @@ describe('batch tier', () => {
      * відповідь текстового замовлення розкладається по всіх постах одразу.
      */
     const project = await makeProject();
-    await db.insert(posts).values([
+    const drawable = await db
+      .insert(posts)
+      .values([
       { projectId: project.id, status: 'planned', position: 1, topicTitle: 'Раз', textHtml: '<b>1</b>' },
       { projectId: project.id, status: 'planned', position: 2, topicTitle: 'Два', textHtml: '<b>2</b>' },
       // Картинка вже є — цей крок для нього пройдено.
@@ -384,10 +388,12 @@ describe('batch tier', () => {
         topicTitle: 'Закріплений',
         textHtml: '<b>з</b>',
       },
-    ]);
+      ])
+      .returning();
 
     const candidates = await batchCandidates({
       projectId: project.id,
+      postId: drawable[0]!.id,
       action: 'svg',
       needsText: true,
       limit: BATCH_MAX_ITEMS,
@@ -395,6 +401,43 @@ describe('batch tier', () => {
 
     expect(candidates.map((c) => c.topicTitle)).toEqual(['Раз', 'Два']);
     expect(candidates.length).toBeGreaterThanOrEqual(BATCH_MIN_ITEMS);
+  });
+
+  it('ставить замовника першим, хай би де він стояв у черзі', async () => {
+    /*
+     * Дефект, який це ловить, коштував дорожче за всю економію від batch.
+     * Пачка обмежена, а кандидатів у буфері десятки — і пост, який запустив
+     * джобу, у власне замовлення не потрапляв. Джоба відправляла запити на
+     * п'ять чужих постів, паркувалась на чверть години, прокидалась ні з чим і
+     * замовляла ще п'ять. Наслідок у бою: 137 викликів «опис картинки» на 49
+     * постів за годину і 171 незакрите замовлення.
+     */
+    const project = await makeProject();
+    const rows = await db
+      .insert(posts)
+      .values(
+        Array.from({ length: 6 }, (_, i) => ({
+          projectId: project.id,
+          status: 'planned' as const,
+          position: i,
+          topicTitle: `Тема ${i}`,
+          textHtml: '<b>є</b>',
+        })),
+      )
+      .returning();
+
+    // Останній у черзі — той, кого пачка на два місця гарантовано не діставала.
+    const last = rows[5]!;
+    const candidates = await batchCandidates({
+      projectId: project.id,
+      postId: last.id,
+      action: 'post_text',
+      needsText: true,
+      limit: 2,
+    });
+
+    expect(candidates[0]!.id).toBe(last.id);
+    expect(candidates).toHaveLength(2);
   });
 
   it('abandons a job past its deadline so the slot can be generated normally', async () => {

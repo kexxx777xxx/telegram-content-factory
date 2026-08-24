@@ -114,10 +114,18 @@ async function batchedText(
    */
   const candidates = await batchCandidates({
     projectId: project.id,
+    postId: post.id,
     action: 'post_text',
     needsText: false,
     limit: BATCH_MAX_ITEMS,
   });
+
+  /*
+   * Замовлення без того, хто його замовив, — це замовлення, на яке нікому
+   * чекати: пост припаркувався б на чверть години, прокинувся ні з чим і
+   * замовив ще одне. Так набиралась сотня незакритих замовлень.
+   */
+  if (!candidates.some((candidate) => candidate.id === post.id)) return null;
 
   /*
    * Один кандидат — не замовлення. Економія від одного запиту та сама, що й від

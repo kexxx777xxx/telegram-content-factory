@@ -53,6 +53,11 @@ export const BATCH_MIN_ITEMS = 2;
 /**
  * Пости, які варто покласти в одне замовлення разом із тим, що його викликав.
  *
+ * Той, хто замовляє, завжди перший у списку. Без цього виходив цикл, який
+ * коштував дорожче за всю економію: пост не потрапляв у власне замовлення,
+ * паркувався на чверть години, прокидався, замовляв ще п'ять чужих — і так по
+ * колу, щоразу наново рахуючи опис своєї картинки.
+ *
  * Сусіди шукаються в тому ж проєкті й на тому ж кроці: у batch платять за
  * запит, тож двадцять постів в одному замовленні коштують рівно як двадцять
  * окремих, але це одне звернення і одне опитування замість двадцяти. Умови ті
@@ -61,6 +66,12 @@ export const BATCH_MIN_ITEMS = 2;
  */
 export async function batchCandidates(input: {
   projectId: string;
+  /**
+   * Пост, який запустив цю джобу. Стоїть у замовленні першим — інакше воно
+   * могло зібратись із самих лише сусідів, а той, хто його замовив, лишився б
+   * чекати на відповідь, якої для нього ніхто не просив.
+   */
+  postId: string;
   action: AiAction;
   /** `true` — потрібен уже готовий текст (крок ілюстрації), `false` — навпаки. */
   needsText: boolean;
@@ -95,7 +106,11 @@ export async function batchCandidates(input: {
         notBatchedYet,
       ),
     )
-    .orderBy(sql`${posts.position} asc nulls last`, asc(posts.createdAt))
+    .orderBy(
+      sql`case when ${posts.id} = ${input.postId} then 0 else 1 end`,
+      sql`${posts.position} asc nulls last`,
+      asc(posts.createdAt),
+    )
     .limit(input.limit);
 }
 
